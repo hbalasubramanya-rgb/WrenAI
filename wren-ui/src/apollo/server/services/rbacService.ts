@@ -223,7 +223,7 @@ export class RbacService implements IRbacService {
   ): Promise<void> {
     const uniqueRoleIds = this.uniqueIds(roleIds);
     for (const roleId of uniqueRoleIds) {
-      await this.getRoleOrThrow(roleId);
+      await this.getRoleOrThrow(roleId, tx);
     }
     const now = new Date().toISOString();
     await this.userRoleRepository.createMany(
@@ -237,8 +237,11 @@ export class RbacService implements IRbacService {
     );
   }
 
-  private async getRoleOrThrow(id: number): Promise<Role> {
-    const role = await this.roleRepository.findOneBy({ id });
+  private async getRoleOrThrow(
+    id: number,
+    tx?: Knex.Transaction,
+  ): Promise<Role> {
+    const role = await this.roleRepository.findOneBy({ id }, { tx });
     if (!role) throw new Error(`Role ${id} was not found.`);
     return role;
   }
