@@ -1,7 +1,14 @@
 import { GraphQLError } from 'graphql';
-import type { ErrorResponse } from '@apollo/client/link/error';
 import { ApolloError } from '@apollo/client';
 import { message } from 'antd';
+
+type ApolloLinkErrorResponse = {
+  graphQLErrors?: readonly GraphQLError[];
+  networkError?: Error | null;
+  operation?: {
+    operationName?: string;
+  };
+};
 
 // Refer to backend GeneralErrorCodes for mapping
 export const ERROR_CODES = {
@@ -453,7 +460,7 @@ errorHandlers.set('CreateInstruction', new CreateInstructionErrorHandler());
 errorHandlers.set('UpdateInstruction', new UpdateInstructionErrorHandler());
 errorHandlers.set('DeleteInstruction', new DeleteInstructionErrorHandler());
 
-const errorHandler = (error: ErrorResponse) => {
+const errorHandler = (error: ApolloLinkErrorResponse) => {
   // networkError
   if (error.networkError) {
     message.error(
