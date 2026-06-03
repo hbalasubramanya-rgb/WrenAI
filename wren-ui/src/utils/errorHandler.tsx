@@ -1,5 +1,5 @@
 import { GraphQLError } from 'graphql';
-import { ErrorResponse } from '@apollo/client/link/error';
+import type { ErrorResponse } from '@apollo/client/link/error';
 import { ApolloError } from '@apollo/client';
 import { message } from 'antd';
 
