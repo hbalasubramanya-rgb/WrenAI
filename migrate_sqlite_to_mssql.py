@@ -23,7 +23,7 @@ def map_sqlite_type(sqlite_type: str) -> str:
     normalized = (sqlite_type or "").upper()
 
     if "BOOL" in normalized:
-        return "BIT"
+        return "NVARCHAR(10)"
     if "INT" in normalized:
         return "BIGINT"
     if any(token in normalized for token in ("CHAR", "CLOB", "TEXT", "VARCHAR")):
@@ -33,9 +33,9 @@ def map_sqlite_type(sqlite_type: str) -> str:
     if any(token in normalized for token in ("REAL", "FLOA", "DOUB")):
         return "FLOAT"
     if any(token in normalized for token in ("NUM", "DEC")):
-        return "DECIMAL(38, 10)"
+        return "NVARCHAR(MAX)"
     if any(token in normalized for token in ("DATE", "TIME")):
-        return "DATETIME2"
+        return "NVARCHAR(100)"
 
     return "NVARCHAR(MAX)"
 
@@ -212,7 +212,7 @@ def copy_table_data(
     )
 
     mssql_cursor = mssql_conn.cursor()
-    mssql_cursor.fast_executemany = True
+    mssql_cursor.fast_executemany = False
 
     copied = 0
     while True:
