@@ -235,6 +235,7 @@ def migrate(args: argparse.Namespace) -> None:
         raise RuntimeError(
             "Provide --connection-string or set the MSSQL_CONN environment variable."
         )
+    connection_string = " ".join(connection_string.split())
 
     try:
         import pyodbc
