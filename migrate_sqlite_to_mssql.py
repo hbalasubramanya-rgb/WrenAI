@@ -40,6 +40,14 @@ def map_sqlite_type(sqlite_type: str) -> str:
     return "NVARCHAR(MAX)"
 
 
+def make_index_safe_type(mssql_type: str) -> str:
+    if mssql_type == "NVARCHAR(MAX)":
+        return "NVARCHAR(450)"
+    if mssql_type == "VARBINARY(MAX)":
+        return "VARBINARY(900)"
+    return mssql_type
+
+
 def validate_sqlite_db(db_path: Path) -> None:
     if not db_path.exists():
         raise FileNotFoundError(f"SQLite database not found: {db_path}")
@@ -135,6 +143,8 @@ def create_table(
         primary_key_position = int(column["pk"])
 
         mssql_type = map_sqlite_type(sqlite_type)
+        if primary_key_position:
+            mssql_type = make_index_safe_type(mssql_type)
         nullable = "NOT NULL" if not_null or primary_key_position else "NULL"
 
         column_definitions.append(
