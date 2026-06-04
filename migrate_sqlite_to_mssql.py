@@ -220,7 +220,7 @@ def copy_table_data(
         if not rows:
             break
 
-        mssql_cursor.executemany(insert_sql, rows)
+        mssql_cursor.executemany(insert_sql, [tuple(row) for row in rows])
         mssql_conn.commit()
         copied += len(rows)
 
