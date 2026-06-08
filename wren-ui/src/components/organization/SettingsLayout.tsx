@@ -55,7 +55,15 @@ export default function OrganizationSettingsLayout({
   titleExtra,
   children,
 }: {
-  section: 'general' | 'members' | 'danger-zone' | 'user-profile';
+  section:
+    | 'project-general'
+    | 'project-access-control'
+    | 'project-danger-zone'
+    | 'general'
+    | 'members'
+    | 'danger-zone'
+    | 'user-profile'
+    | 'user-danger-zone';
   title: ReactNode;
   titleExtra?: ReactNode;
   children: ReactNode;
@@ -65,10 +73,22 @@ export default function OrganizationSettingsLayout({
       <Layout>
         <StyledSider width={252}>
           <SidebarSection>Project</SidebarSection>
-          <PlaceholderItem>General</PlaceholderItem>
-          <PlaceholderItem>Access control</PlaceholderItem>
+          <SidebarItem $active={section === 'project-general'}>
+            <Link style={linkStyle} href={Path.ProjectGeneral}>
+              General
+            </Link>
+          </SidebarItem>
+          <SidebarItem $active={section === 'project-access-control'}>
+            <Link style={linkStyle} href={Path.ProjectAccessControl}>
+              Access control
+            </Link>
+          </SidebarItem>
           <PlaceholderItem>Data source</PlaceholderItem>
-          <PlaceholderItem>Danger zone</PlaceholderItem>
+          <SidebarItem $active={section === 'project-danger-zone'}>
+            <Link style={linkStyle} href={Path.ProjectDangerZone}>
+              Danger zone
+            </Link>
+          </SidebarItem>
 
           <SidebarSection>Organization</SidebarSection>
           <SidebarItem $active={section === 'general'}>
@@ -81,7 +101,6 @@ export default function OrganizationSettingsLayout({
               Members
             </Link>
           </SidebarItem>
-          <PlaceholderItem>Billing</PlaceholderItem>
           <SidebarItem $active={section === 'danger-zone'}>
             <Link style={linkStyle} href={Path.OrganizationDangerZone}>
               Danger zone
@@ -94,7 +113,11 @@ export default function OrganizationSettingsLayout({
               Profile
             </Link>
           </SidebarItem>
-          <PlaceholderItem>Danger zone</PlaceholderItem>
+          <SidebarItem $active={section === 'user-danger-zone'}>
+            <Link style={linkStyle} href={Path.UserDangerZone}>
+              Danger zone
+            </Link>
+          </SidebarItem>
         </StyledSider>
         <StyledContent>
           <PageBody>

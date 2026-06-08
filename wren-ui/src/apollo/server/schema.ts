@@ -39,6 +39,10 @@ export const typeDefs = gql`
     SELECT_PROJECT
     GET_CURRENT_USER
     UPDATE_CURRENT_USER
+    GET_PROJECT_ACCESS
+    ADD_PROJECT_MEMBER
+    UPDATE_PROJECT_MEMBER
+    REMOVE_PROJECT_MEMBER
   }
 
   input ApiHistoryFilterInput {
@@ -722,12 +726,22 @@ export const typeDefs = gql`
     question: String
     sql: String
     taskId: String
+    answerContent: String
+    answerStatus: ThreadResponseAnswerStatus
+    answerErrorCode: String
+    answerErrorShortMessage: String
+    answerErrorMessage: String
   }
 
   input CreateThreadResponseInput {
     question: String
     sql: String
     taskId: String
+    answerContent: String
+    answerStatus: ThreadResponseAnswerStatus
+    answerErrorCode: String
+    answerErrorShortMessage: String
+    answerErrorMessage: String
   }
 
   input ThreadUniqueWhereInput {
@@ -873,6 +887,7 @@ export const typeDefs = gql`
 
   input UpdateCurrentProjectInput {
     language: ProjectLanguage!
+    displayName: String
   }
 
   type Settings {
