@@ -103,6 +103,7 @@ class MSSQLMetadata(Metadata):
         response = self.connection.sql(sql).to_pandas().to_dict(orient="records")
 
         unique_tables = {}
+        seen_columns: dict[str, set[str]] = {}
         for row in response:
             # generate unique table name
             schema_table = self._format_compact_table_name(
@@ -121,20 +122,33 @@ class MSSQLMetadata(Metadata):
                     ),
                     primaryKey="",
                 )
+                seen_columns[schema_table] = set()
 
-            # table exists, and add column to the table
-            unique_tables[schema_table].columns.append(
-                Column(
-                    name=row["column_name"],
-                    type=self._transform_column_type(row["data_type"]),
-                    notNull=row["is_nullable"].lower() == "no",
-                    description=row["column_comment"],
-                    properties=None,
+            column_name = row["column_name"]
+
+            # Metadata joins can return the same physical column more than once
+            # when SQL Server has multiple constraint/property rows for a table.
+            if column_name in seen_columns[schema_table]:
+                logger.debug(
+                    f"Skipping duplicate MSSQL metadata column {column_name!r} "
+                    f"for table {schema_table!r}"
                 )
-            )
+            else:
+                seen_columns[schema_table].add(column_name)
+                # table exists, and add column to the table
+                unique_tables[schema_table].columns.append(
+                    Column(
+                        name=column_name,
+                        type=self._transform_column_type(row["data_type"]),
+                        notNull=row["is_nullable"].lower() == "no",
+                        description=row["column_comment"],
+                        properties=None,
+                    )
+                )
+
             # if column is primary key
             if row["is_pk"] == "YES":
-                unique_tables[schema_table].primaryKey = row["column_name"]
+                unique_tables[schema_table].primaryKey = column_name
         return list(unique_tables.values())
 
     def get_constraints(self) -> list[Constraint]:
