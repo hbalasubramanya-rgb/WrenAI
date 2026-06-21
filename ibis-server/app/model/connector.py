@@ -1,6 +1,7 @@
 import base64
 import importlib
 import os
+import re
 import time
 from abc import ABC, abstractmethod
 from contextlib import closing, suppress
@@ -565,11 +566,27 @@ class MSSqlConnector(IbisConnector):
 
     @tracer.start_as_current_span("connector_query", kind=trace.SpanKind.CLIENT)
     def query(self, sql: str, limit: int | None = None) -> pa.Table:
-        sql = self._flatten_pagination_limit(sql)
-        ibis_table = self.connection.sql(sql)
+        sql = self._flatten_pagination_limit(self._normalize_tsql_for_execution(sql))
+        try:
+            with closing(self.connection.raw_sql(sql)) as cur:
+                rows = cur.fetchall()
+                columns = [column[0] for column in (cur.description or [])]
+        except AttributeError as e:
+            # Workaround for ibis issue #10331 in the execution path.
+            if e.args and e.args[0] == "'NoneType' object has no attribute 'lower'":
+                error_message = self._describe_sql_for_error_message(sql)
+                raise WrenError(
+                    error_code=ErrorCode.INVALID_SQL,
+                    message=f"The sql query failed. {error_message or str(e)}.",
+                    phase=ErrorPhase.SQL_EXECUTION,
+                    metadata={DIALECT_SQL: sql},
+                ) from e
+            raise
+
+        df = pd.DataFrame(rows, columns=columns)
         if limit is not None:
-            ibis_table = ibis_table.limit(limit)
-        return self._round_decimal_columns(ibis_table)
+            df = df.head(limit)
+        return pa.Table.from_pandas(df, preserve_index=False)
 
     def _round_decimal_columns(self, ibis_table: Table, scale: int = 9) -> pa.Table:
         def round_decimal(val):
@@ -649,36 +666,79 @@ class MSSqlConnector(IbisConnector):
         except Exception as e:
             return f"Error: {e!s}"
 
+    def _normalize_tsql_for_execution(self, sql: str) -> str:
+        replacements = (
+            (r"DATE_PART\s*\(", "DATEPART("),
+            (r"DATEPART\(\s*YEAR\s*,", "DATEPART('YEAR',"),
+            (r"DATEPART\(\s*MONTH\s*,", "DATEPART('MONTH',"),
+            (r"DATEPART\(\s*DAY\s*,", "DATEPART('DAY',"),
+            (r"DATEDIFF\(\s*'SECOND'\s*,", "DATEDIFF(SECOND,"),
+            (r"DATEDIFF\(\s*'MINUTE'\s*,", "DATEDIFF(MINUTE,"),
+            (r"DATEDIFF\(\s*'HOUR'\s*,", "DATEDIFF(HOUR,"),
+            (r"DATEDIFF\(\s*'DAY'\s*,", "DATEDIFF(DAY,"),
+            (r"\s+NULLS\s+LAST\b", ""),
+            (r"\s+NULLS\s+FIRST\b", ""),
+        )
+
+        normalized = sql
+        for pattern, replacement in replacements:
+            normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+
+        return normalized
+
+    def _quote_sql_literal(self, sql: str) -> str:
+        return "N'" + sql.replace("'", "''") + "'"
+
     def dry_run(self, sql: str) -> None:
+        normalized_sql = self._normalize_tsql_for_execution(sql)
         try:
-            super().dry_run(sql)
-        except AttributeError as e:
-            # Workaround for ibis issue #10331
-            if e.args[0] == "'NoneType' object has no attribute 'lower'":
-                error_message = self._describe_sql_for_error_message(sql)
+            error_message = self._describe_sql_for_error_message(normalized_sql)
+            if error_message:
                 raise WrenError(
                     error_code=ErrorCode.INVALID_SQL,
                     message=f"The sql dry run failed. {error_message}.",
                     phase=ErrorPhase.SQL_DRY_RUN,
-                    metadata={DIALECT_SQL: sql},
+                    metadata={DIALECT_SQL: normalized_sql},
+                )
+        except WrenError:
+            raise
+        except AttributeError as e:
+            # Workaround for ibis issue #10331
+            if e.args[0] == "'NoneType' object has no attribute 'lower'":
+                error_message = self._describe_sql_for_error_message(normalized_sql)
+                raise WrenError(
+                    error_code=ErrorCode.INVALID_SQL,
+                    message=f"The sql dry run failed. {error_message}.",
+                    phase=ErrorPhase.SQL_DRY_RUN,
+                    metadata={DIALECT_SQL: normalized_sql},
                 ) from e
             raise WrenError(
                 error_code=ErrorCode.IBIS_PROJECT_ERROR,
                 message=str(e),
                 phase=ErrorPhase.SQL_DRY_RUN,
             ) from e
+        except Exception as e:
+            raise WrenError(
+                error_code=ErrorCode.INVALID_SQL,
+                message=f"The sql dry run failed. {e!s}.",
+                phase=ErrorPhase.SQL_DRY_RUN,
+                metadata={DIALECT_SQL: normalized_sql},
+            ) from e
 
     @tracer.start_as_current_span(
         "describe_sql_for_error_message", kind=trace.SpanKind.CLIENT
     )
     def _describe_sql_for_error_message(self, sql: str) -> str:
-        tsql = sge.convert(sql).sql("mssql")
-        describe_sql = f"SELECT error_message FROM sys.dm_exec_describe_first_result_set({tsql}, NULL, 0)"
+        describe_sql = (
+            "SELECT error_message "
+            "FROM sys.dm_exec_describe_first_result_set("
+            f"{self._quote_sql_literal(sql)}, NULL, 0)"
+        )
         with closing(self.connection.raw_sql(describe_sql)) as cur:
             rows = cur.fetchall()
             if rows is None or len(rows) == 0:
-                return "Unknown reason"
-            return rows[0][0]
+                return ""
+            return rows[0][0] or ""
 
 
 class CannerConnector(IbisConnector):
