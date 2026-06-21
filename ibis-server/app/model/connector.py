@@ -345,11 +345,36 @@ class IbisConnector(ConnectorABC):
 
     @tracer.start_as_current_span("connector_query", kind=trace.SpanKind.CLIENT)
     def query(self, sql: str, limit: int | None = None) -> pa.Table:
-        ibis_table = self.connection.sql(sql)
+        try:
+            ibis_table = self.connection.sql(sql)
+            if limit is not None:
+                ibis_table = ibis_table.limit(limit)
+            ibis_table = self._handle_pyarrow_unsupported_type(ibis_table)
+            return ibis_table.to_pyarrow()
+        except AttributeError as e:
+            if e.args and e.args[0] == "'NoneType' object has no attribute 'lower'":
+                return self._query_raw_sql(sql, limit)
+            raise
+
+    def _query_raw_sql(self, sql: str, limit: int | None = None) -> pa.Table:
+        with closing(self.connection.raw_sql(sql)) as cur:
+            rows = cur.fetchall()
+            columns = [
+                self._cursor_column_name(column, index)
+                for index, column in enumerate(cur.description or [])
+            ]
+
+        df = pd.DataFrame(rows, columns=columns)
         if limit is not None:
-            ibis_table = ibis_table.limit(limit)
-        ibis_table = self._handle_pyarrow_unsupported_type(ibis_table)
-        return ibis_table.to_pyarrow()
+            df = df.head(limit)
+        return pa.Table.from_pandas(df, preserve_index=False)
+
+    @staticmethod
+    def _cursor_column_name(column: Any, index: int) -> str:
+        name = getattr(column, "name", None)
+        if name is None and isinstance(column, (tuple, list)) and column:
+            name = column[0]
+        return str(name or f"column_{index + 1}")
 
     def _handle_pyarrow_unsupported_type(self, ibis_table: Table, **kwargs) -> Table:
         result_table = ibis_table
