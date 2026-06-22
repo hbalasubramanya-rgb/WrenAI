@@ -1,8 +1,9 @@
 from contextlib import closing
 from decimal import Decimal as PyDecimal
+import re
 
+import pandas as pd
 import pyarrow as pa
-import sqlglot.expressions as sge
 from ibis.expr.datatypes import Decimal
 from ibis.expr.types import Table
 from sqlglot import exp, parse_one
@@ -17,12 +18,29 @@ class MSSqlConnector(IbisConnector):
         super().__init__(DataSource.mssql, connection_info)
 
     def query(self, sql: str, limit: int | None = None) -> pa.Table:
-        sql = self._flatten_pagination_limit(sql)
-        ibis_table = self.connection.sql(sql)
-        if limit is not None:
-            ibis_table = ibis_table.limit(limit)
-        ibis_table = self._handle_pyarrow_unsupported_type(ibis_table)
-        return self._round_decimal_columns(ibis_table)
+        sql = self._flatten_pagination_limit(self._normalize_tsql_for_execution(sql))
+        try:
+            with closing(self.connection.raw_sql(sql)) as cur:
+                rows = cur.fetchall()
+                columns = [
+                    self._cursor_column_name(column, index)
+                    for index, column in enumerate(cur.description or [])
+                ]
+
+            df = pd.DataFrame(rows, columns=columns)
+            if limit is not None:
+                df = df.head(limit)
+            return pa.Table.from_pandas(df, preserve_index=False)
+        except AttributeError as e:
+            if self._is_none_lower_attribute_error(e):
+                error_message = self._describe_sql_for_error_message(sql)
+                raise WrenError(
+                    error_code=ErrorCode.INVALID_SQL,
+                    message=f"The sql query failed. {error_message or str(e)}.",
+                    phase=ErrorPhase.SQL_EXECUTION,
+                    metadata={DIALECT_SQL: sql},
+                ) from e
+            raise
 
     def _round_decimal_columns(self, ibis_table: Table, scale: int = 9) -> pa.Table:
         def round_decimal(val):
@@ -78,35 +96,86 @@ class MSSqlConnector(IbisConnector):
         except Exception:
             return sql_query
 
+    def _normalize_tsql_for_execution(self, sql: str) -> str:
+        replacements = (
+            (r"DATE_PART\s*\(", "DATEPART("),
+            (r"DATEPART\(\s*YEAR\s*,", "DATEPART('YEAR',"),
+            (r"DATEPART\(\s*MONTH\s*,", "DATEPART('MONTH',"),
+            (r"DATEPART\(\s*DAY\s*,", "DATEPART('DAY',"),
+            (r"DATEDIFF\(\s*'SECOND'\s*,", "DATEDIFF(SECOND,"),
+            (r"DATEDIFF\(\s*'MINUTE'\s*,", "DATEDIFF(MINUTE,"),
+            (r"DATEDIFF\(\s*'HOUR'\s*,", "DATEDIFF(HOUR,"),
+            (r"DATEDIFF\(\s*'DAY'\s*,", "DATEDIFF(DAY,"),
+            (r"\s+NULLS\s+LAST\b", ""),
+            (r"\s+NULLS\s+FIRST\b", ""),
+        )
+
+        normalized = sql
+        for pattern, replacement in replacements:
+            normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+
+        return normalized
+
+    def _quote_sql_literal(self, sql: str) -> str:
+        return "N'" + sql.replace("'", "''") + "'"
+
     def dry_run(self, sql: str) -> None:
+        normalized_sql = self._normalize_tsql_for_execution(sql)
         try:
-            super().dry_run(sql)
-        except AttributeError as e:
-            if "NoneType" in str(e) and "lower" in str(e):
-                error_message = self._describe_sql_for_error_message(sql)
+            error_message = self._describe_sql_for_error_message(normalized_sql)
+            if error_message:
                 raise WrenError(
                     error_code=ErrorCode.INVALID_SQL,
                     message=f"The sql dry run failed. {error_message}.",
                     phase=ErrorPhase.SQL_DRY_RUN,
-                    metadata={DIALECT_SQL: sql},
+                    metadata={DIALECT_SQL: normalized_sql},
+                )
+        except WrenError:
+            raise
+        except AttributeError as e:
+            if self._is_none_lower_attribute_error(e):
+                error_message = self._describe_sql_for_error_message(normalized_sql)
+                raise WrenError(
+                    error_code=ErrorCode.INVALID_SQL,
+                    message=f"The sql dry run failed. {error_message}.",
+                    phase=ErrorPhase.SQL_DRY_RUN,
+                    metadata={DIALECT_SQL: normalized_sql},
                 ) from e
             raise WrenError(
                 error_code=ErrorCode.IBIS_PROJECT_ERROR,
                 message=str(e),
                 phase=ErrorPhase.SQL_DRY_RUN,
             ) from e
+        except Exception as e:
+            raise WrenError(
+                error_code=ErrorCode.INVALID_SQL,
+                message=f"The sql dry run failed. {e!s}.",
+                phase=ErrorPhase.SQL_DRY_RUN,
+                metadata={DIALECT_SQL: normalized_sql},
+            ) from e
 
     def _describe_sql_for_error_message(self, sql: str) -> str:
-        try:
-            tsql = sge.convert(sql).sql("mssql")
-            describe_sql = f"SELECT error_message FROM sys.dm_exec_describe_first_result_set({tsql}, NULL, 0)"
-            with closing(self.connection.raw_sql(describe_sql)) as cur:
-                rows = cur.fetchall()
-                if not rows:
-                    return "Unknown reason"
-                return rows[0][0]
-        except Exception:
-            return "Unknown reason"
+        describe_sql = (
+            "SELECT error_message "
+            "FROM sys.dm_exec_describe_first_result_set("
+            f"{self._quote_sql_literal(sql)}, NULL, 0)"
+        )
+        with closing(self.connection.raw_sql(describe_sql)) as cur:
+            rows = cur.fetchall()
+            if rows is None or len(rows) == 0:
+                return ""
+            return rows[0][0] or ""
+
+    @staticmethod
+    def _cursor_column_name(column, index: int) -> str:
+        name = getattr(column, "name", None)
+        if name is None and isinstance(column, (tuple, list)) and column:
+            name = column[0]
+        return str(name or f"column_{index + 1}")
+
+    @staticmethod
+    def _is_none_lower_attribute_error(error: AttributeError) -> bool:
+        return "NoneType" in str(error) and "lower" in str(error)
 
 
 def create_connector(connection_info) -> MSSqlConnector:

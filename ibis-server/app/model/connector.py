@@ -595,10 +595,20 @@ class MSSqlConnector(IbisConnector):
         try:
             with closing(self.connection.raw_sql(sql)) as cur:
                 rows = cur.fetchall()
-                columns = [column[0] for column in (cur.description or [])]
+                columns = [
+                    self._cursor_column_name(column, index)
+                    for index, column in enumerate(cur.description or [])
+                ]
+
+            df = pd.DataFrame(rows, columns=columns)
+            if limit is not None:
+                df = df.head(limit)
+            return pa.Table.from_pandas(df, preserve_index=False)
         except AttributeError as e:
-            # Workaround for ibis issue #10331 in the execution path.
-            if e.args and e.args[0] == "'NoneType' object has no attribute 'lower'":
+            # Ibis' MSSQL schema probe can mask SQL Server describe errors by
+            # calling .lower() on a NULL system_type_name before checking
+            # error_message. Return the real database message when this leaks.
+            if self._is_none_lower_attribute_error(e):
                 error_message = self._describe_sql_for_error_message(sql)
                 raise WrenError(
                     error_code=ErrorCode.INVALID_SQL,
@@ -607,11 +617,6 @@ class MSSqlConnector(IbisConnector):
                     metadata={DIALECT_SQL: sql},
                 ) from e
             raise
-
-        df = pd.DataFrame(rows, columns=columns)
-        if limit is not None:
-            df = df.head(limit)
-        return pa.Table.from_pandas(df, preserve_index=False)
 
     def _round_decimal_columns(self, ibis_table: Table, scale: int = 9) -> pa.Table:
         def round_decimal(val):
@@ -688,8 +693,8 @@ class MSSqlConnector(IbisConnector):
 
             return inner.sql(dialect="tsql")
 
-        except Exception as e:
-            return f"Error: {e!s}"
+        except Exception:
+            return sql_query
 
     def _normalize_tsql_for_execution(self, sql: str) -> str:
         replacements = (
@@ -729,7 +734,7 @@ class MSSqlConnector(IbisConnector):
             raise
         except AttributeError as e:
             # Workaround for ibis issue #10331
-            if e.args[0] == "'NoneType' object has no attribute 'lower'":
+            if self._is_none_lower_attribute_error(e):
                 error_message = self._describe_sql_for_error_message(normalized_sql)
                 raise WrenError(
                     error_code=ErrorCode.INVALID_SQL,
@@ -764,6 +769,10 @@ class MSSqlConnector(IbisConnector):
             if rows is None or len(rows) == 0:
                 return ""
             return rows[0][0] or ""
+
+    @staticmethod
+    def _is_none_lower_attribute_error(error: AttributeError) -> bool:
+        return "NoneType" in str(error) and "lower" in str(error)
 
 
 class CannerConnector(IbisConnector):
