@@ -594,7 +594,7 @@ class MSSqlConnector(IbisConnector):
         sql = self._flatten_pagination_limit(self._normalize_tsql_for_execution(sql))
         try:
             with closing(self.connection.raw_sql(sql)) as cur:
-                rows = cur.fetchall()
+                rows = self._normalize_cursor_rows(cur.fetchall())
                 columns = [
                     self._cursor_column_name(column, index)
                     for index, column in enumerate(cur.description or [])
@@ -718,6 +718,10 @@ class MSSqlConnector(IbisConnector):
 
     def _quote_sql_literal(self, sql: str) -> str:
         return "N'" + sql.replace("'", "''") + "'"
+
+    @staticmethod
+    def _normalize_cursor_rows(rows):
+        return [tuple(row) for row in rows]
 
     def dry_run(self, sql: str) -> None:
         normalized_sql = self._normalize_tsql_for_execution(sql)

@@ -15,6 +15,14 @@ class FakeCursor:
         self.closed = True
 
 
+class FakeRow:
+    def __init__(self, *values):
+        self._values = values
+
+    def __iter__(self):
+        return iter(self._values)
+
+
 class FakeConnection:
     def __init__(self, cursors=None, error=None):
         self.cursors = list(cursors or [])
@@ -64,6 +72,30 @@ def test_query_uses_raw_sql_for_grouped_aggregate_results():
     assert result.to_pylist() == [
         {"ProdType": "Widgets", "TotalQty": 12},
         {"ProdType": "Gadgets", "TotalQty": 8},
+    ]
+
+
+def test_query_normalizes_dbapi_row_objects_before_building_dataframe():
+    connection = FakeConnection(
+        [
+            FakeCursor(
+                rows=[FakeRow("Alpha", 4), FakeRow("Beta", 10)],
+                description=[("ProductLine",), ("IssueCount",)],
+            )
+        ]
+    )
+    connector = _connector(connection)
+
+    result = connector.query(
+        'SELECT "ProductLine", COUNT(*) AS "IssueCount" '
+        'FROM "dbo_batch_records" '
+        'GROUP BY "ProductLine"'
+    )
+
+    assert result.column_names == ["ProductLine", "IssueCount"]
+    assert result.to_pylist() == [
+        {"ProductLine": "Alpha", "IssueCount": 4},
+        {"ProductLine": "Beta", "IssueCount": 10},
     ]
 
 
