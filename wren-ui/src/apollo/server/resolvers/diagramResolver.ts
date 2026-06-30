@@ -113,13 +113,9 @@ export class DiagramResolver {
         }
 
         if (column.isCalculated) {
-          const transformedCalculatedField = this.transformCalculatedField(
-            column,
-            modelMDL?.columns || [],
+          transformedModel.calculatedFields.push(
+            this.transformCalculatedField(column, modelMDL.columns),
           );
-          if (transformedCalculatedField) {
-            transformedModel.calculatedFields.push(transformedCalculatedField);
-          }
         } else {
           const nestedColumns = modelNestedColumns.filter(
             (nestedColumn) => nestedColumn.columnId === column.id,
@@ -137,7 +133,7 @@ export class DiagramResolver {
   }
 
   private transformModel(model: Model): DiagramModel {
-    const properties = this.parseProperties(model.properties);
+    const properties = JSON.parse(model.properties);
     return {
       id: uuidv4(),
       modelId: model.id,
@@ -159,7 +155,7 @@ export class DiagramResolver {
     column: ModelColumn,
     nestedColumns: ModelNestedColumn[],
   ): DiagramModelField {
-    const properties = this.parseProperties(column.properties);
+    const properties = JSON.parse(column.properties);
     return {
       id: uuidv4(),
       columnId: column.id,
@@ -189,24 +185,12 @@ export class DiagramResolver {
   private transformCalculatedField(
     column: ModelColumn,
     columnsMDL: ColumnMDL[],
-  ): DiagramModelField | null {
-    const properties = this.parseProperties(column.properties);
-    const lineage = this.parseLineage(column.lineage);
+  ): DiagramModelField {
+    const properties = JSON.parse(column.properties);
+    const lineage = JSON.parse(column.lineage);
     const columnMDL = columnsMDL.find(
       ({ name }) => name === column.referenceName,
     );
-    if (!columnMDL) {
-      logger.debug(
-        `Skip diagram calculated field "${column.referenceName}" because it is missing from built MDL`,
-      );
-      return null;
-    }
-    if (columnMDL.expression == null) {
-      logger.debug(
-        `Skip diagram calculated field "${column.referenceName}" because its MDL expression is missing`,
-      );
-      return null;
-    }
     return {
       id: uuidv4(),
       columnId: column.id,
@@ -238,7 +222,9 @@ export class DiagramResolver {
     const displayName = models.find(
       (model) => model.referenceName === referenceName,
     )?.displayName;
-    const properties = this.parseProperties(relation.properties);
+    const properties = relation.properties
+      ? JSON.parse(relation.properties)
+      : null;
     return {
       id: uuidv4(),
       relationId: relation.id,
@@ -263,7 +249,7 @@ export class DiagramResolver {
   }
 
   private transformView(view: View): DiagramView {
-    const properties = this.parseProperties(view.properties);
+    const properties = JSON.parse(view.properties);
     const fields = (properties?.columns || []).map((column: any) => ({
       id: uuidv4(),
       nodeType: NodeType.FIELD,
@@ -283,31 +269,5 @@ export class DiagramResolver {
       fields,
       description: properties?.description,
     };
-  }
-
-  private parseProperties(properties?: string | null): Record<string, any> {
-    if (!properties) {
-      return {};
-    }
-    try {
-      const parsed = JSON.parse(properties);
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch (error) {
-      logger.debug(`Can not parse properties "${properties}"`);
-      return {};
-    }
-  }
-
-  private parseLineage(lineage?: string | null): number[] {
-    if (!lineage) {
-      return [];
-    }
-    try {
-      const parsed = JSON.parse(lineage);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (error) {
-      logger.debug(`Can not parse lineage "${lineage}"`);
-      return [];
-    }
   }
 }

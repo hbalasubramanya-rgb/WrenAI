@@ -48,8 +48,7 @@ async def count_documents(
         if project_id
         else None
     )
-    document_count = await store.count_documents(filters=filters)
-    return document_count
+    return await store.count_documents(filters=filters)
 
 
 @observe(capture_input=False, capture_output=False)

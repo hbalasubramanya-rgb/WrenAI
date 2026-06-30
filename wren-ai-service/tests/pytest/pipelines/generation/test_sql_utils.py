@@ -59,27 +59,6 @@ def test_column_validation_allows_qualified_suffix_table_references():
     ) == []
 
 
-def test_column_validation_rejects_invalid_unqualified_projection_for_single_table():
-    assert find_invalid_column_references(
-        'SELECT warning_signals FROM "dbo_repair_logs"',
-        {"dbo_repair_logs": ["id", "created_at", "status"]},
-    ) == ["warning_signals"]
-
-
-def test_column_validation_rejects_invalid_unqualified_projection_alias():
-    assert find_invalid_column_references(
-        'SELECT categories AS category_count FROM "dbo_repair_logs"',
-        {"dbo_repair_logs": ["id", "created_at", "status"]},
-    ) == ["categories"]
-
-
-def test_column_validation_allows_valid_unqualified_projection_for_single_table():
-    assert find_invalid_column_references(
-        'SELECT status AS repair_status FROM "dbo_repair_logs"',
-        {"dbo_repair_logs": ["id", "created_at", "status"]},
-    ) == []
-
-
 def test_construct_valid_table_columns_adds_qualified_suffix_tables():
     documents = [
         'CREATE TABLE "wrenai"."public"."dbo_repair_logs" ("warning_signals" INTEGER);',
@@ -90,101 +69,6 @@ def test_construct_valid_table_columns_adds_qualified_suffix_tables():
         "public.dbo_repair_logs": ["warning_signals"],
         "wrenai.public.dbo_repair_logs": ["warning_signals"],
     }
-
-
-def test_construct_valid_table_columns_from_semantic_metadata_document():
-    documents = [
-        """
-        {
-          "models": [
-            {
-              "name": "dbo_new_orders",
-              "referenceName": "sales.dbo_new_orders",
-              "columns": [
-                {"name": "business"},
-                {"name": "market"},
-                {"name": "customer_name"},
-                {"name": "product_name"},
-                {"name": "order_value"}
-              ],
-              "calculatedFields": [
-                {"name": "order_month"}
-              ]
-            }
-          ]
-        }
-        """,
-    ]
-
-    assert construct_valid_table_names(documents) == [
-        "dbo_new_orders",
-        "sales.dbo_new_orders",
-    ]
-    assert construct_valid_table_columns(documents) == {
-        "dbo_new_orders": [
-            "business",
-            "customer_name",
-            "market",
-            "order_month",
-            "order_value",
-            "product_name",
-        ],
-        "sales.dbo_new_orders": [
-            "business",
-            "customer_name",
-            "market",
-            "order_month",
-            "order_value",
-            "product_name",
-        ],
-    }
-
-
-def test_column_validation_uses_semantic_metadata_document_columns():
-    documents = [
-        """
-        {
-          "models": [
-            {
-              "name": "dbo_new_orders",
-              "columns": [
-                {"name": "customer_name"},
-                {"name": "product_name"},
-                {"name": "order_value"}
-              ]
-            }
-          ]
-        }
-        """,
-    ]
-    valid_table_columns = construct_valid_table_columns(documents)
-
-    assert find_invalid_column_references(
-        'SELECT "dbo_new_orders"."customer_name", '
-        '"dbo_new_orders"."product_name", '
-        '"dbo_new_orders"."order_value" '
-        'FROM "dbo_new_orders"',
-        valid_table_columns,
-    ) == []
-    assert find_invalid_column_references(
-        'SELECT "dbo_new_orders"."missing_value" FROM "dbo_new_orders"',
-        valid_table_columns,
-    ) == ["dbo_new_orders.missing_value"]
-
-
-def test_normalize_generation_result_sql_standardizes_identifier_quotes():
-    sql = (
-        'SELECT COUNT(*) AS `num_tags`, SUM(`tokenCost`) AS `popularity` '
-        'FROM `dbo_kb_articles` WHERE (""""category"""" = \'Ticket Sourcing\')'
-    )
-
-    normalized = normalize_generation_result_sql(sql, data_source="mssql")
-
-    assert "`" not in normalized
-    assert '""""category""""' not in normalized
-    assert '"num_tags"' in normalized
-    assert '"tokenCost"' in normalized
-    assert '"category" = \'Ticket Sourcing\'' in normalized
 
 
 def test_schema_validation_ignores_null_table_metadata():
@@ -501,11 +385,6 @@ def test_get_text_to_sql_rules_adds_mssql_specific_constraints():
     assert "Resolve relative time phrases" in rules
     assert "Do not include helper ranking columns" in rules
     assert "prefer SELECT TOP (N)" in rules
-    assert "connected datasource metadata" in rules
-    assert '"dbo_DebugFixes"."Description"' in rules
-    assert '"dbo_DebugFixLogs"."FixId"' in rules
-    assert "repair SLA compliance" in rules
-    assert '"dbo_repair_logs"."status"' in rules
     assert "FailurePatternID" in rules
     assert "failure_code" in rules
     assert "CURRENT_DATE - INTERVAL '1 month'" not in rules
@@ -546,9 +425,6 @@ def test_get_sql_generation_system_prompt_uses_data_source_specific_rules():
 
     assert "The target database is MSSQL." in prompt
     assert "DATEPART(YEAR, <timestamp_expression>)" in prompt
-    assert "deployed semantic model definitions" in prompt
-    assert '"dbo_DebugFixes"."Description"' in prompt
-    assert "repair SLA compliance" in prompt
 
 
 def test_normalize_generation_result_sql_rewrites_common_mssql_time_patterns():
@@ -1196,100 +1072,23 @@ def test_normalize_generation_result_sql_rewrites_timestamp_subtraction_for_mssq
         in normalized
     )
 
-def test_normalize_generation_result_sql_rewrites_mssql_time_buckets_and_ordering():
+
+def test_normalize_generation_result_sql_rewrites_mssql_limit_to_top():
     sql = """
     SELECT
-      YEAR,
-      MONTH,
-      COUNT(*) AS repair_count
-    FROM dbo_repair_logs
-    GROUP BY YEAR, MONTH
-    ORDER BY YEAR ASC NULLS LAST, MONTH ASC NULLS LAST
-    """
-
-    normalized = normalize_generation_result_sql(sql, data_source="MSSQL")
-
-    assert "NULLS LAST" not in normalized
-    assert "SELECT YEAR" not in normalized
-    assert "GROUP BY YEAR" not in normalized
-    assert "ORDER BY YEAR" not in normalized
-    assert (
-        'DATEPART(YEAR, "dbo_repair_logs"."created_at") AS "year"'
-        in normalized
-    )
-    assert (
-        'DATEPART(MONTH, "dbo_repair_logs"."created_at") AS "month"'
-        in normalized
-    )
-    assert 'GROUP BY DATEPART(YEAR, "dbo_repair_logs"."created_at")' in normalized
-    assert 'ORDER BY DATEPART(YEAR, "dbo_repair_logs"."created_at") ASC' in normalized
-
-
-def test_normalize_generation_result_sql_rewrites_aliased_mssql_time_buckets():
-    sql = """
-    SELECT
-      YEAR AS year,
-      MONTH AS month,
-      COUNT(*) AS repair_count
-    FROM dbo_repair_logs
-    GROUP BY YEAR, MONTH
-    ORDER BY YEAR ASC, MONTH ASC
-    """
-
-    normalized = normalize_generation_result_sql(sql, data_source="MSSQL")
-
-    assert "YEAR AS year" not in normalized
-    assert "MONTH AS month" not in normalized
-    assert (
-        'DATEPART(YEAR, "dbo_repair_logs"."created_at") AS year'
-        in normalized
-    )
-    assert (
-        'DATEPART(MONTH, "dbo_repair_logs"."created_at") AS month'
-        in normalized
-    )
-    assert 'GROUP BY DATEPART(YEAR, "dbo_repair_logs"."created_at")' in normalized
-    assert 'ORDER BY DATEPART(YEAR, "dbo_repair_logs"."created_at") ASC' in normalized
-
-
-def test_normalize_generation_result_sql_rewrites_debug_entry_quoted_year_alias():
-    sql = """
-    SELECT
-      "YEAR" AS "YEAR",
-      "dbo_DebugEntries"."BusinessUnit" AS "manufacturing_unit",
-      COUNT("dbo_DebugEntries"."DebugEntryId") AS "throughput"
-    FROM "dbo_DebugEntries"
-    GROUP BY "YEAR", "dbo_DebugEntries"."BusinessUnit"
-    ORDER BY "YEAR" ASC
-    """
-
-    normalized = normalize_generation_result_sql(sql, data_source="MSSQL")
-
-    assert '"YEAR" AS "YEAR"' not in normalized
-    assert 'GROUP BY "YEAR"' not in normalized
-    assert 'ORDER BY "YEAR"' not in normalized
-    assert 'DATEPART(YEAR, "dbo_DebugEntries"."DateIn") AS "YEAR"' in normalized
-    assert 'GROUP BY DATEPART(YEAR, "dbo_DebugEntries"."DateIn")' in normalized
-    assert 'ORDER BY DATEPART(YEAR, "dbo_DebugEntries"."DateIn") ASC' in normalized
-
-
-def test_normalize_generation_result_sql_rewrites_mssql_limit_and_where_parentheses():
-    sql = """
-    SELECT model_id, COUNT(*) AS ticket_count
+      model_id,
+      COUNT(*) AS ticket_count
     FROM dbo_tickets
-    WHERE (source = 'AI')
+    WHERE source = 'AI'
     GROUP BY model_id
-    ORDER BY ticket_count DESC NULLS LAST
+    ORDER BY ticket_count DESC
     LIMIT 1
     """
 
     normalized = normalize_generation_result_sql(sql, data_source="MSSQL")
 
-    assert normalized.startswith("SELECT TOP 1")
-    assert "WHERE (source = 'AI')" not in normalized
-    assert "WHERE source = 'AI'" in normalized
-    assert "NULLS LAST" not in normalized
-    assert "LIMIT 1" not in normalized
+    assert "LIMIT" not in normalized
+    assert normalized.startswith("SELECT TOP 1 model_id")
 
 
 def test_normalize_generation_result_sql_removes_mssql_limit_when_top_exists():

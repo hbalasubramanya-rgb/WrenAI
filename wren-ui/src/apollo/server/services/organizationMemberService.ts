@@ -135,7 +135,6 @@ export interface IOrganizationMemberService {
   updateCurrentUserProfile(
     input: UpdateCurrentUserProfileInput,
   ): Promise<CurrentUserProfile>;
-  deleteCurrentUserAccount(): Promise<boolean>;
   listCurrentProjectAccess(): Promise<{
     members: ProjectAccessMemberSummary[];
     availableMembers: ProjectAccessAvailableMember[];
@@ -417,18 +416,6 @@ export class OrganizationMemberService implements IOrganizationMemberService {
       updatedAt: new Date().toISOString(),
     });
     return this.serializeCurrentUserProfile(user);
-  }
-
-  public async deleteCurrentUserAccount(): Promise<boolean> {
-    const organization = await this.getCurrentOrganizationOrThrow();
-    const currentUserId = await this.getCurrentUserId(organization.id);
-    if (!currentUserId) {
-      throw new ApiError('Current user not found', 404);
-    }
-
-    await this.assertCurrentUserCanDeleteAccount(currentUserId);
-    await this.userRepository.deleteOne(currentUserId);
-    return true;
   }
 
   public async listCurrentProjectAccess() {
@@ -945,33 +932,6 @@ export class OrganizationMemberService implements IOrganizationMemberService {
         'Only Organization admins can delete the organization',
         403,
       );
-    }
-  }
-
-  private async assertCurrentUserCanDeleteAccount(userId: number) {
-    const organizations = await this.organizationRepository.findAll({
-      order: 'id',
-    });
-
-    for (const organization of organizations) {
-      const members =
-        await this.organizationMemberRepository.findMappingsByOrganizationId(
-          organization.id,
-        );
-      const currentMember = members.find((member) => member.userId === userId);
-      if (!currentMember || currentMember.organizationRole !== 'Admin') {
-        continue;
-      }
-
-      const adminCount = members.filter(
-        (member) => member.organizationRole === 'Admin',
-      ).length;
-      if (adminCount <= 1) {
-        throw new ApiError(
-          'If you are the last Organization admin, you cannot delete your account. Assign another Organization admin or delete the organization first.',
-          400,
-        );
-      }
     }
   }
 

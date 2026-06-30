@@ -267,26 +267,17 @@ export default function useAskPrompt(threadId?: number) {
           if (askingTaskPollingSessionRef.current !== pollingSessionId) return;
         }
 
-        let shouldContinuePolling = true;
         try {
           const request = fetchAskingTask({
             variables: { taskId },
-          });
-          askingTaskPollingRequestRef.current = request.then(() => undefined);
-          const result = await request;
-          const task = result.data?.askingTask;
-          if (!task || getIsFinished(task.status)) {
-            shouldContinuePolling = false;
-            stopAskingTaskPolling();
-          }
+          }).then(() => undefined);
+          askingTaskPollingRequestRef.current = request;
+          await request;
         } catch (error) {
           console.error(error);
         } finally {
           askingTaskPollingRequestRef.current = null;
-          if (
-            shouldContinuePolling &&
-            askingTaskPollingSessionRef.current === pollingSessionId
-          ) {
+          if (askingTaskPollingSessionRef.current === pollingSessionId) {
             askingTaskPollingRef.current = setTimeout(
               run,
               askingTaskPollingDelayRef.current,
@@ -321,26 +312,17 @@ export default function useAskPrompt(threadId?: number) {
           if (recommendedPollingSessionRef.current !== pollingSessionId) return;
         }
 
-        let shouldContinuePolling = true;
         try {
           const request = fetchInstantRecommendedQuestions({
             variables: { taskId },
-          });
-          recommendedPollingRequestRef.current = request.then(() => undefined);
-          const result = await request;
-          const task = result.data?.instantRecommendedQuestions;
-          if (!task || isRecommendedFinished(task.status)) {
-            shouldContinuePolling = false;
-            stopRecommendedPolling();
-          }
+          }).then(() => undefined);
+          recommendedPollingRequestRef.current = request;
+          await request;
         } catch (error) {
           console.error(error);
         } finally {
           recommendedPollingRequestRef.current = null;
-          if (
-            shouldContinuePolling &&
-            recommendedPollingSessionRef.current === pollingSessionId
-          ) {
+          if (recommendedPollingSessionRef.current === pollingSessionId) {
             recommendedPollingRef.current = setTimeout(
               run,
               recommendedPollingDelayRef.current,

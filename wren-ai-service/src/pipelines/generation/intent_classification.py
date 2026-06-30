@@ -1,7 +1,7 @@
 import ast
 import logging
 import sys
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import Any, Literal, Optional
 
 import orjson
 from hamilton import base
@@ -17,10 +17,7 @@ from src.pipelines.common import build_table_ddl, clean_up_new_lines
 from src.pipelines.generation.utils.sql import construct_instructions
 from src.utils import trace_cost
 from src.web.v1.services import Configuration
-if TYPE_CHECKING:
-    from src.web.v1.services.ask import AskHistory
-else:
-    AskHistory = Any
+from src.web.v1.services.ask import AskHistory
 
 logger = logging.getLogger("wren-ai-service")
 
@@ -387,7 +384,7 @@ class IntentClassification(BasicPipeline):
         instructions: Optional[list[dict]] = None,
         configuration: Configuration = Configuration(),
     ):
-        logger.info("Intent Classification pipeline is running...")
+        logger.debug("Intent Classification pipeline is running...")
         return await self._pipe.execute(
             ["post_process"],
             inputs={

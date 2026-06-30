@@ -43,11 +43,6 @@ export interface IMDLBuilder {
 // responsible to generate a valid manifest json
 export class MDLBuilder implements IMDLBuilder {
   private manifest: Manifest;
-  private invalidCalculatedFields: Array<{
-    modelId: number;
-    columnId: number;
-    reason: string;
-  }> = [];
 
   private project: Project;
   private readonly models: Model[];
@@ -97,7 +92,6 @@ export class MDLBuilder implements IMDLBuilder {
   }
 
   public build(): Manifest {
-    this.invalidCalculatedFields = [];
     this.addProject();
     this.addModel();
     this.addNormalField();
@@ -105,7 +99,6 @@ export class MDLBuilder implements IMDLBuilder {
     this.addCalculatedField();
     this.addView();
     this.postProcessManifest();
-    this.logInvalidCalculatedFieldSummary();
     return this.getManifest();
   }
 
@@ -118,7 +111,7 @@ export class MDLBuilder implements IMDLBuilder {
       return;
     }
     this.manifest.models = this.models.map((model: Model) => {
-      const properties = this.parseProperties(model.properties);
+      const properties = model.properties ? JSON.parse(model.properties) : {};
       // put displayName in properties
       if (model.displayName) {
         properties.displayName = model.displayName;
@@ -167,7 +160,7 @@ export class MDLBuilder implements IMDLBuilder {
       return;
     }
     this.manifest.views = this.views.map((view: View) => {
-      const properties = this.parseProperties(view.properties);
+      const properties = JSON.parse(view.properties) || {};
 
       // filter out properties that are not null or undefined
       // and are in the list of properties that are allowed
@@ -219,7 +212,9 @@ export class MDLBuilder implements IMDLBuilder {
         if (!model.columns) {
           model.columns = [];
         }
-        const properties = this.parseProperties(column.properties);
+        const properties = column.properties
+          ? JSON.parse(column.properties)
+          : {};
         // put displayName in properties
         if (column.displayName) {
           properties.displayName = column.displayName;
@@ -284,56 +279,42 @@ export class MDLBuilder implements IMDLBuilder {
     this.columns
       .filter(({ isCalculated }) => isCalculated)
       .forEach((column: ModelColumn) => {
-        try {
-          // validate manifest.model exist
-          const relatedModel = this.relatedModels.find(
-            (model: any) => model.id === column.modelId,
+        // validate manifest.model exist
+        const relatedModel = this.relatedModels.find(
+          (model: any) => model.id === column.modelId,
+        );
+        if (!relatedModel) {
+          logger.debug(
+            `Build MDL Column Error: can not find related model, modelId "${column.modelId}", columnId: "${column.id}"`,
           );
-          if (!relatedModel) {
-            this.recordInvalidCalculatedField(
-              column.modelId,
-              column.id,
-              'can not find related model',
-            );
-            return;
-          }
-          const model = this.manifest.models.find(
-            (model: any) => model.name === relatedModel.referenceName,
-          );
-          if (!model) {
-            this.recordInvalidCalculatedField(
-              column.modelId,
-              column.id,
-              'can not find model',
-            );
-            return;
-          }
-          const columnName = this.getManifestColumnName(column, model);
-          const expression = this.getColumnExpression(column, model, columnName);
-          if (expression === null) {
-            this.recordInvalidCalculatedField(
-              column.modelId,
-              column.id,
-              'invalid calculated field metadata',
-            );
-            return;
-          }
-          const columnValue = {
-            name: columnName,
-            type: column.type,
-            isCalculated: true,
-            expression,
-            notNull: column.notNull ? true : false,
-            properties: this.parseProperties(column.properties),
-          };
-          model.columns.push(columnValue);
-        } catch (error: any) {
-          this.recordInvalidCalculatedField(
-            column.modelId,
-            column.id,
-            `failed to add calculated field: ${error.message}`,
-          );
+          return;
         }
+        const model = this.manifest.models.find(
+          (model: any) => model.name === relatedModel.referenceName,
+        );
+        if (!model) {
+          logger.debug(
+            `Build MDL Column Error: can not find model, modelId "${column.modelId}", columnId: "${column.id}"`,
+          );
+          return;
+        }
+        const columnName = this.getManifestColumnName(column, model);
+        const expression = this.getColumnExpression(column, model, columnName);
+        if (expression === null) {
+          logger.debug(
+            `Build MDL Column Error: invalid calculated field metadata, modelId "${column.modelId}", columnId: "${column.id}"`,
+          );
+          return;
+        }
+        const columnValue = {
+          name: columnName,
+          type: column.type,
+          isCalculated: true,
+          expression,
+          notNull: column.notNull ? true : false,
+          properties: JSON.parse(column.properties),
+        };
+        model.columns.push(columnValue);
       });
   }
 
@@ -341,44 +322,34 @@ export class MDLBuilder implements IMDLBuilder {
     modelName: string,
     calculatedField: ModelColumn,
   ) {
-    try {
-      const model = this.manifest.models.find(
-        (model: any) => model.name === modelName,
-      );
-      if (!model) {
-        logger.debug(`Can not find model "${modelName}" to add calculated field`);
-        return;
-      }
-      const columnName = this.getManifestColumnName(calculatedField, model);
-      const expression = this.getColumnExpression(
-        calculatedField,
-        model,
-        columnName,
-      );
-      if (expression === null) {
-        this.recordInvalidCalculatedField(
-          calculatedField.modelId,
-          calculatedField.id,
-          `insert skipped because metadata is invalid for "${calculatedField.referenceName}"`,
-        );
-        return;
-      }
-      const columnValue = {
-        name: columnName,
-        type: calculatedField.type,
-        isCalculated: true,
-        expression,
-        notNull: calculatedField.notNull ? true : false,
-        properties: this.parseProperties(calculatedField.properties),
-      };
-      model.columns.push(columnValue);
-    } catch (error: any) {
-      this.recordInvalidCalculatedField(
-        calculatedField.modelId,
-        calculatedField.id,
-        `insert failed for "${calculatedField.referenceName}": ${error.message}`,
-      );
+    const model = this.manifest.models.find(
+      (model: any) => model.name === modelName,
+    );
+    if (!model) {
+      logger.debug(`Can not find model "${modelName}" to add calculated field`);
+      return;
     }
+    const columnName = this.getManifestColumnName(calculatedField, model);
+    const expression = this.getColumnExpression(
+      calculatedField,
+      model,
+      columnName,
+    );
+    if (expression === null) {
+      logger.debug(
+        `Can not add calculated field "${calculatedField.referenceName}" because its metadata is invalid`,
+      );
+      return;
+    }
+    const columnValue = {
+      name: columnName,
+      type: calculatedField.type,
+      isCalculated: true,
+      expression,
+      notNull: calculatedField.notNull ? true : false,
+      properties: JSON.parse(calculatedField.properties),
+    };
+    model.columns.push(columnValue);
   }
 
   public addRelation(): void {
@@ -408,7 +379,9 @@ export class MDLBuilder implements IMDLBuilder {
           relation: name,
         });
 
-        const properties = this.parseProperties(relation.properties);
+        const properties = relation.properties
+          ? JSON.parse(relation.properties)
+          : {};
 
         return {
           name: name,
@@ -557,111 +530,15 @@ export class MDLBuilder implements IMDLBuilder {
   private buildTableReference(model: Model): TableReference | null {
     const modelProps =
       model.properties && typeof model.properties === 'string'
-        ? this.parseProperties(model.properties)
+        ? JSON.parse(model.properties)
         : {};
-    const propertyTableReference =
-      typeof modelProps.table === 'string'
-        ? this.buildTableReferenceFromTableName(modelProps.table)
-        : null;
-    const fallbackTableReference = this.buildFallbackTableReference(model);
-    const table =
-      propertyTableReference?.table ||
-      modelProps.table ||
-      fallbackTableReference?.table;
-    if (!table) {
+    if (!modelProps.table) {
       return null;
     }
     return {
-      catalog:
-        propertyTableReference?.catalog ||
-        modelProps.catalog ||
-        fallbackTableReference?.catalog ||
-        null,
-      schema:
-        propertyTableReference?.schema ||
-        modelProps.schema ||
-        fallbackTableReference?.schema ||
-        null,
-      table,
-    };
-  }
-
-  private buildFallbackTableReference(model: Model): TableReference | null {
-    if (!this.useRustWrenEngine() || !model.sourceTableName) {
-      return null;
-    }
-
-    const sourceTableName = model.sourceTableName.trim();
-    const normalizedTableReference =
-      this.buildTableReferenceFromTableName(sourceTableName);
-    if (normalizedTableReference) {
-      return normalizedTableReference;
-    }
-
-    return {
-      catalog: null,
-      schema: null,
-      table: sourceTableName,
-    };
-  }
-
-  private buildTableReferenceFromTableName(
-    tableName: string,
-  ): TableReference | null {
-    const sourceTableName = tableName.trim();
-    const catalogQualifiedMatch = sourceTableName.match(
-      /^([^.]+)\.([^.]+)\.([^.]+)$/,
-    );
-    if (catalogQualifiedMatch) {
-      const normalizedTableName = this.normalizeDboPrefixedTableName(
-        catalogQualifiedMatch[3],
-      );
-      return {
-        catalog: catalogQualifiedMatch[1],
-        schema: normalizedTableName.schema || catalogQualifiedMatch[2],
-        table: normalizedTableName.table,
-      };
-    }
-
-    const dotQualifiedMatch = sourceTableName.match(/^([^.]+)\.([^.]+)$/);
-    if (dotQualifiedMatch) {
-      return {
-        catalog: null,
-        schema: dotQualifiedMatch[1],
-        table: dotQualifiedMatch[2],
-      };
-    }
-
-    const underscoreQualifiedMatch = sourceTableName.match(/^(dbo)_(.+)$/i);
-    if (underscoreQualifiedMatch) {
-      return {
-        catalog: null,
-        schema:
-          this.project.type === DataSourceName.MSSQL
-            ? underscoreQualifiedMatch[1]
-            : null,
-        table: underscoreQualifiedMatch[2],
-      };
-    }
-
-    return null;
-  }
-
-  private normalizeDboPrefixedTableName(tableName: string): {
-    schema: string | null;
-    table: string;
-  } {
-    const underscoreQualifiedMatch = tableName.match(/^(dbo)_(.+)$/i);
-    if (!underscoreQualifiedMatch) {
-      return { schema: null, table: tableName };
-    }
-
-    return {
-      schema:
-        this.project.type === DataSourceName.MSSQL
-          ? underscoreQualifiedMatch[1]
-          : null,
-      table: underscoreQualifiedMatch[2],
+      catalog: modelProps.catalog || null,
+      schema: modelProps.schema || null,
+      table: modelProps.table,
     };
   }
   private hasDuplicateSourceColumns(modelId: number): boolean {
@@ -743,41 +620,6 @@ export class MDLBuilder implements IMDLBuilder {
       return [];
     }
   }
-  private parseProperties(properties?: string | null): Record<string, any> {
-    if (!properties) {
-      return {};
-    }
-    try {
-      const parsed = JSON.parse(properties);
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch (error) {
-      logger.debug(`Can not parse properties "${properties}"`);
-      return {};
-    }
-  }
-  private recordInvalidCalculatedField(
-    modelId: number,
-    columnId: number,
-    reason: string,
-  ) {
-    this.invalidCalculatedFields.push({ modelId, columnId, reason });
-  }
-  private logInvalidCalculatedFieldSummary() {
-    if (this.invalidCalculatedFields.length === 0) {
-      return;
-    }
-    const preview = this.invalidCalculatedFields
-      .slice(0, 10)
-      .map(
-        ({ modelId, columnId, reason }) =>
-          `modelId="${modelId}", columnId="${columnId}", reason="${reason}"`,
-      )
-      .join('; ');
-    logger.warn(
-      `Skipped ${this.invalidCalculatedFields.length} invalid calculated field(s) while building MDL. ${preview}${this.invalidCalculatedFields.length > 10 ? '; ...' : ''}`,
-    );
-  }
-
   private getManifestColumnName(
     column: ModelColumn,
     model: Partial<ModelMDL>,
@@ -785,6 +627,7 @@ export class MDLBuilder implements IMDLBuilder {
     if (this.columnNameAliases.has(column.id)) {
       return this.columnNameAliases.get(column.id)!;
     }
+
     const columnName = getUniqueReferenceName(
       column.referenceName,
       this.getManifestColumnNames(model),
@@ -792,7 +635,6 @@ export class MDLBuilder implements IMDLBuilder {
     this.columnNameAliases.set(column.id, columnName);
     return columnName;
   }
-
   private getManifestColumnNames(model: Partial<ModelMDL>): Set<string> {
     const modelName = model.name || '';
     if (!this.manifestColumnNamesByModel.has(modelName)) {
@@ -804,7 +646,6 @@ export class MDLBuilder implements IMDLBuilder {
     }
     return this.manifestColumnNamesByModel.get(modelName)!;
   }
-
   private getManifestSourceColumnNameMap(
     model: Partial<ModelMDL>,
   ): Map<string, string> {
@@ -814,7 +655,6 @@ export class MDLBuilder implements IMDLBuilder {
     }
     return this.manifestColumnNameBySourceByModel.get(modelName)!;
   }
-
   private postProcessManifest() {
     if (this.useRustWrenEngine()) {
       // 1. remove all the key that the value is null

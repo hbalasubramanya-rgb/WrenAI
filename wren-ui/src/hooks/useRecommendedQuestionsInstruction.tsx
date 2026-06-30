@@ -92,24 +92,15 @@ export default function useRecommendedQuestionsInstruction() {
         if (pollingSessionRef.current !== pollingSessionId) return;
       }
 
-      let shouldContinuePolling = true;
       try {
-        const request = fetchRecommendationQuestions();
-        pollingRequestRef.current = request.then(() => undefined);
-        const result = await request;
-        const task = result.data?.getProjectRecommendationQuestions;
-        if (!task || isRecommendedFinished(task.status)) {
-          shouldContinuePolling = false;
-          stopPolling();
-        }
+        const request = fetchRecommendationQuestions().then(() => undefined);
+        pollingRequestRef.current = request;
+        await request;
       } catch (error) {
         console.error(error);
       } finally {
         pollingRequestRef.current = null;
-        if (
-          shouldContinuePolling &&
-          pollingSessionRef.current === pollingSessionId
-        ) {
+        if (pollingSessionRef.current === pollingSessionId) {
           pollingRef.current = setTimeout(run, pollingDelayRef.current);
         }
       }

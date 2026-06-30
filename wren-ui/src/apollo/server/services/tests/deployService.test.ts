@@ -13,7 +13,6 @@ describe('DeployService', () => {
     mockWrenAIAdaptor = { deploy: jest.fn() };
     mockDeployLogRepository = {
       findLastProjectDeployLog: jest.fn(),
-      findInProgressProjectDeployLog: jest.fn(),
       createOne: jest.fn(),
       updateOne: jest.fn(),
     };
@@ -73,114 +72,5 @@ describe('DeployService', () => {
     expect(mockWrenAIAdaptor.deploy).not.toHaveBeenCalled();
   });
 
-  it('should treat equivalent deployed manifests as the same deployment', () => {
-    const manifest = {
-      models: [
-        {
-          name: 'orders',
-          columns: [{ name: 'id' }, { name: 'amount' }],
-        },
-        {
-          name: 'customers',
-          columns: [{ name: 'id' }, { name: 'name' }],
-        },
-      ],
-    };
-    const reorderedManifest = {
-      models: [
-        {
-          columns: [{ name: 'name' }, { name: 'id' }],
-          name: 'customers',
-        },
-        {
-          columns: [{ name: 'amount' }, { name: 'id' }],
-          name: 'orders',
-        },
-      ],
-    };
-
-    expect(
-      deployService.isSameDeployment(manifest, 1, {
-        hash: 'different-hash-version',
-        manifest: reorderedManifest,
-      }),
-    ).toBe(true);
-  });
-
-  it('should not treat changed deployed manifests as the same deployment', () => {
-    const manifest = {
-      models: [{ name: 'orders', columns: [{ name: 'id' }] }],
-    };
-    const changedManifest = {
-      models: [{ name: 'orders', columns: [{ name: 'id' }, { name: 'amount' }] }],
-    };
-
-    expect(
-      deployService.isSameDeployment(manifest, 1, {
-        hash: 'different-hash-version',
-        manifest: changedManifest,
-      }),
-    ).toBe(false);
-  });
-
-  it('should clear stale in-progress deployments', async () => {
-    const oldDate = new Date(Date.now() - 11 * 60 * 1000);
-    mockDeployLogRepository.findInProgressProjectDeployLog.mockResolvedValue({
-      id: 122,
-      status: DeployStatusEnum.IN_PROGRESS,
-      updatedAt: oldDate,
-    });
-
-    const deployment = await deployService.getInProgressDeployment(1);
-
-    expect(deployment).toBeNull();
-    expect(mockDeployLogRepository.updateOne).toHaveBeenCalledWith(122, {
-      status: DeployStatusEnum.FAILED,
-      error: 'Deployment timed out before completion.',
-    });
-  });
-
-  it('should clear previous in-progress deployment before creating a new one', async () => {
-    const manifest = { key: 'value' };
-    const projectId = 1;
-
-    mockDeployLogRepository.findLastProjectDeployLog.mockResolvedValue(null);
-    mockDeployLogRepository.findInProgressProjectDeployLog.mockResolvedValue({
-      id: 122,
-      status: DeployStatusEnum.IN_PROGRESS,
-      updatedAt: new Date(),
-    });
-    mockDeployLogRepository.createOne.mockResolvedValue({ id: 123 });
-    mockWrenAIAdaptor.deploy.mockResolvedValue({ status: 'SUCCESS' });
-
-    const response = await deployService.deploy(manifest, projectId);
-
-    expect(response.status).toEqual(DeployStatusEnum.SUCCESS);
-    expect(mockDeployLogRepository.updateOne).toHaveBeenCalledWith(122, {
-      status: DeployStatusEnum.FAILED,
-      error: 'Deployment was superseded by a new deployment.',
-    });
-    expect(mockDeployLogRepository.updateOne).toHaveBeenCalledWith(123, {
-      status: DeployStatusEnum.SUCCESS,
-      error: undefined,
-    });
-  });
-
-  it('should mark created deployment failed when deployment throws', async () => {
-    const manifest = { key: 'value' };
-    const projectId = 1;
-
-    mockDeployLogRepository.findLastProjectDeployLog.mockResolvedValue(null);
-    mockDeployLogRepository.findInProgressProjectDeployLog.mockResolvedValue(null);
-    mockDeployLogRepository.createOne.mockResolvedValue({ id: 123 });
-    mockWrenAIAdaptor.deploy.mockRejectedValue(new Error('network error'));
-
-    const response = await deployService.deploy(manifest, projectId);
-
-    expect(response.status).toEqual(DeployStatusEnum.FAILED);
-    expect(mockDeployLogRepository.updateOne).toHaveBeenCalledWith(123, {
-      status: DeployStatusEnum.FAILED,
-      error: 'network error',
-    });
-  });
+  // Add more tests here to cover other scenarios and error handling
 });

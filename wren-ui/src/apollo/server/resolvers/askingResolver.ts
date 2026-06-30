@@ -66,17 +66,6 @@ export interface AskingTask {
   queryId?: string;
 }
 
-type ThreadCreationArgs = {
-  question?: string;
-  taskId?: string;
-  sql?: string;
-  answerContent?: string;
-  answerStatus?: 'FINISHED' | 'FAILED' | 'INTERRUPTED' | null;
-  answerErrorCode?: string;
-  answerErrorShortMessage?: string;
-  answerErrorMessage?: string;
-};
-
 // DetailedThread is a type that represents a detailed thread, which is a thread with responses.
 export interface DetailedThread {
   id: number; // ID
@@ -258,7 +247,14 @@ export class AskingResolver {
 
   public async createThread(
     _root: any,
-    args: { data: ThreadCreationArgs },
+    args: {
+      data: {
+        question?: string;
+        taskId?: string;
+        // if we use recommendation questions, sql will be provided
+        sql?: string;
+      };
+    },
     ctx: IContext,
   ): Promise<Thread> {
     const { data } = args;
@@ -281,20 +277,6 @@ export class AskingResolver {
     } else {
       // when we use recommendation questions, there's no task to track
       threadInput = data;
-    }
-
-    if (data.answerStatus) {
-      threadInput.answerDetail = {
-        status: data.answerStatus,
-        content: data.answerContent,
-        error: data.answerErrorCode
-          ? {
-              code: data.answerErrorCode as any,
-              shortMessage: data.answerErrorShortMessage,
-              message: data.answerErrorMessage,
-            }
-          : undefined,
-      };
     }
 
     const eventName = TelemetryEvent.HOME_CREATE_THREAD;
@@ -407,7 +389,15 @@ export class AskingResolver {
 
   public async createThreadResponse(
     _root: any,
-    args: { threadId: number; data: ThreadCreationArgs },
+    args: {
+      threadId: number;
+      data: {
+        question?: string;
+        taskId?: string;
+        // if we use recommendation questions, sql will be provided
+        sql?: string;
+      };
+    },
     ctx: IContext,
   ): Promise<ThreadResponse> {
     const { threadId, data } = args;
@@ -431,20 +421,6 @@ export class AskingResolver {
     } else {
       // when we use recommendation questions, there's no task to track
       threadResponseInput = data;
-    }
-
-    if (data.answerStatus) {
-      threadResponseInput.answerDetail = {
-        status: data.answerStatus,
-        content: data.answerContent,
-        error: data.answerErrorCode
-          ? {
-              code: data.answerErrorCode as any,
-              shortMessage: data.answerErrorShortMessage,
-              message: data.answerErrorMessage,
-            }
-          : undefined,
-      };
     }
 
     try {

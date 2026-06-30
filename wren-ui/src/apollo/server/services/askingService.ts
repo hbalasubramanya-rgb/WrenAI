@@ -16,7 +16,6 @@ import { IThreadRepository, Thread } from '../repositories/threadRepository';
 import {
   IThreadResponseRepository,
   ThreadResponse,
-  ThreadResponseAnswerDetail,
   ThreadResponseAdjustmentType,
 } from '../repositories/threadResponseRepository';
 import { getLogger } from '@server/utils';
@@ -32,7 +31,11 @@ import {
   IViewRepository,
   Project,
 } from '../repositories';
-import { IQueryService, PreviewDataResponse } from './queryService';
+import {
+  IQueryService,
+  PreviewDataResponse,
+  isPreviewDataEmpty,
+} from './queryService';
 import { IMDLService } from './mdlService';
 import {
   ThreadRecommendQuestionBackgroundTracker,
@@ -44,11 +47,12 @@ import {
 import { getConfig } from '@server/config';
 import { TextBasedAnswerBackgroundTracker } from '../backgrounds/textBasedAnswerBackgroundTracker';
 import { IAskingTaskTracker, TrackedAskingResult } from './askingTaskTracker';
+import * as Errors from '@server/utils/error';
 
 const config = getConfig();
 
 const logger = getLogger('AskingService');
-logger.level = 'debug';
+logger.level = 'info';
 
 // const QUERY_ID_PLACEHOLDER = '0';
 
@@ -70,7 +74,6 @@ export interface AskingDetailTaskInput {
   question?: string;
   sql?: string;
   trackedAskingResult?: TrackedAskingResult;
-  answerDetail?: ThreadResponseAnswerDetail;
 }
 
 export interface AskingDetailTaskUpdateInput {
@@ -120,6 +123,13 @@ const isChartGenerationInProgress = (status?: ChartStatus | string | null) =>
   ([ChartStatus.FETCHING, ChartStatus.GENERATING] as string[]).includes(
     status || '',
   );
+
+const emptyResultChartError = {
+  code: Errors.GeneralErrorCodes.NO_CHART,
+  message:
+    'The SQL query ran successfully, but it returned no rows to visualize.',
+  shortMessage: 'No chart data',
+};
 
 // adjustment input
 export interface AdjustmentReasoningInput {
@@ -349,9 +359,6 @@ class BreakdownBackgroundTracker {
           // check if status change
           if (breakdownDetail.status === result.status) {
             // mark the job as finished
-            logger.debug(
-              `Job ${threadResponse.id} status not changed, finished`,
-            );
             this.runningJobs.delete(threadResponse.id);
             return;
           }
@@ -537,7 +544,10 @@ export class AskingService implements IAskingService {
   public async getThreadRecommendationQuestions(
     threadId: number,
   ): Promise<ThreadRecommendQuestionResult> {
-    const thread = await this.ensureThreadInCurrentProject(threadId);
+    const thread = await this.threadRepository.findOneBy({ id: threadId });
+    if (!thread) {
+      throw new Error(`Thread ${threadId} not found`);
+    }
 
     // handle not started
     const res: ThreadRecommendQuestionResult = {
@@ -578,7 +588,10 @@ export class AskingService implements IAskingService {
   private async doGenerateThreadRecommendationQuestions(
     threadId: number,
   ): Promise<void> {
-    const thread = await this.ensureThreadInCurrentProject(threadId);
+    const thread = await this.threadRepository.findOneBy({ id: threadId });
+    if (!thread) {
+      throw new Error(`Thread ${threadId} not found`);
+    }
 
     if (this.threadRecommendQuestionBackgroundTracker.isExist(thread)) {
       logger.debug(
@@ -588,7 +601,7 @@ export class AskingService implements IAskingService {
     }
 
     const project = await this.projectService.getProjectById(thread.projectId);
-    const { manifest } = await this.mdlService.makeModelMDL(project);
+    const { manifest } = await this.mdlService.makeProjectModelMDL(project.id);
 
     const threadResponses = await this.threadResponseRepository.findAllBy({
       threadId,
@@ -663,22 +676,7 @@ export class AskingService implements IAskingService {
     threadResponseId?: number,
   ): Promise<Task> {
     const { threadId, language } = payload;
-    const currentProject = await this.projectService.getCurrentProject();
-    let projectId = payload.projectId ?? currentProject.id;
-    if (threadId) {
-      const thread = await this.threadRepository.findOneBy({ id: threadId });
-      if (!thread) {
-        throw new Error(`Thread ${threadId} not found`);
-      }
-      if (payload.projectId && payload.projectId !== thread.projectId) {
-        throw new Error(
-          `Thread ${threadId} does not belong to project ${payload.projectId}`,
-        );
-      }
-      projectId = thread.projectId;
-    } else if (projectId !== currentProject.id) {
-      throw new Error(`Project ${projectId} is not the active project`);
-    }
+    const projectId = await this.getProjectIdForAskingPayload(payload);
     const deployId = await this.getDeployId(projectId);
 
     // if it's a follow-up question, then the input will have a threadId
@@ -778,7 +776,6 @@ export class AskingService implements IAskingService {
       question: input.question,
       sql: input.sql,
       askingTaskId: input.trackedAskingResult?.taskId,
-      answerDetail: input.answerDetail,
     });
 
     // if queryId is provided, update asking task
@@ -809,14 +806,12 @@ export class AskingService implements IAskingService {
       throw new Error('Update thread input is empty');
     }
 
-    await this.ensureThreadInCurrentProject(threadId);
     return this.threadRepository.updateOne(threadId, {
       summary: input.summary,
     });
   }
 
   public async deleteThread(threadId: number): Promise<void> {
-    await this.ensureThreadInCurrentProject(threadId);
     await this.threadRepository.deleteOne(threadId);
   }
 
@@ -824,14 +819,19 @@ export class AskingService implements IAskingService {
     input: AskingDetailTaskInput,
     threadId: number,
   ): Promise<ThreadResponse> {
-    const thread = await this.ensureThreadInCurrentProject(threadId);
+    const thread = await this.threadRepository.findOneBy({
+      id: threadId,
+    });
+
+    if (!thread) {
+      throw new Error(`Thread ${threadId} not found`);
+    }
 
     const threadResponse = await this.threadResponseRepository.createOne({
       threadId: thread.id,
       question: input.question,
       sql: input.sql,
       askingTaskId: input.trackedAskingResult?.taskId,
-      answerDetail: input.answerDetail,
     });
 
     // if queryId is provided, update asking task
@@ -857,7 +857,6 @@ export class AskingService implements IAskingService {
     if (!threadResponse) {
       throw new Error(`Thread response ${responseId} not found`);
     }
-    await this.ensureThreadInCurrentProject(threadResponse.threadId);
 
     return await this.threadResponseRepository.updateOne(responseId, {
       sql: data.sql,
@@ -957,7 +956,7 @@ export class AskingService implements IAskingService {
 
     const project = await this.getProjectForThreadResponse(threadResponse);
     const deployment = await this.deployService.getLastDeployment(project.id);
-    let chartData: PreviewDataResponse;
+    let chartData: PreviewDataResponse | undefined;
     try {
       chartData = (await this.queryService.preview(threadResponse.sql, {
         project,
@@ -965,12 +964,21 @@ export class AskingService implements IAskingService {
         modelingOnly: false,
         limit: 500,
       })) as PreviewDataResponse;
+
+      if (isPreviewDataEmpty(chartData)) {
+        return await this.threadResponseRepository.updateOne(threadResponse.id, {
+          chartDetail: {
+            status: ChartStatus.FAILED,
+            error: emptyResultChartError,
+            chartSchema: {},
+          },
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(
-        `Preview failed before chart generation for response ${threadResponse.id}. ${message}`,
+        `Preview failed before chart generation for response ${threadResponse.id}; falling back to AI service preview. ${message}`,
       );
-      throw error;
     }
 
     // 1. create a task on AI service to generate the chart
@@ -1024,7 +1032,7 @@ export class AskingService implements IAskingService {
 
     const project = await this.getProjectForThreadResponse(threadResponse);
     const deployment = await this.deployService.getLastDeployment(project.id);
-    let chartData: PreviewDataResponse;
+    let chartData: PreviewDataResponse | undefined;
     try {
       chartData = (await this.queryService.preview(threadResponse.sql, {
         project,
@@ -1032,12 +1040,22 @@ export class AskingService implements IAskingService {
         modelingOnly: false,
         limit: 500,
       })) as PreviewDataResponse;
+
+      if (isPreviewDataEmpty(chartData)) {
+        return await this.threadResponseRepository.updateOne(threadResponse.id, {
+          chartDetail: {
+            status: ChartStatus.FAILED,
+            error: emptyResultChartError,
+            chartSchema: {},
+            adjustment: true,
+          },
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(
-        `Preview failed before chart adjustment for response ${threadResponse.id}. ${message}`,
+        `Preview failed before chart adjustment for response ${threadResponse.id}; falling back to AI service preview. ${message}`,
       );
-      throw error;
     }
 
     // 1. create a task on AI service to adjust the chart
@@ -1070,18 +1088,11 @@ export class AskingService implements IAskingService {
   }
 
   public async getResponsesWithThread(threadId: number) {
-    await this.ensureThreadInCurrentProject(threadId);
     return this.threadResponseRepository.getResponsesWithThread(threadId);
   }
 
   public async getResponse(responseId: number) {
-    const response = await this.threadResponseRepository.findOneBy({
-      id: responseId,
-    });
-    if (!response) {
-      return null;
-    }
-    return response;
+    return this.threadResponseRepository.findOneBy({ id: responseId });
   }
 
   public async previewData(responseId: number, limit?: number) {
@@ -1157,18 +1168,14 @@ export class AskingService implements IAskingService {
   public async createInstantRecommendedQuestions(
     input: InstantRecommendedQuestionsInput,
   ): Promise<Task> {
-    const project = await this.projectService.getCurrentProject();
-    const key = JSON.stringify({
-      projectId: project.id,
-      previousQuestions: input.previousQuestions || [],
-    });
+    const key = JSON.stringify(input.previousQuestions || []);
     const existingJob = this.instantRecommendationJobs.get(key);
     if (existingJob) {
       logger.debug('instant recommended questions are already being requested');
       return existingJob;
     }
 
-    const job = this.doCreateInstantRecommendedQuestions(input, project);
+    const job = this.doCreateInstantRecommendedQuestions(input);
     this.instantRecommendationJobs.set(key, job);
     try {
       return await job;
@@ -1179,19 +1186,15 @@ export class AskingService implements IAskingService {
 
   private async doCreateInstantRecommendedQuestions(
     input: InstantRecommendedQuestionsInput,
-    project?: Project,
   ): Promise<Task> {
-    const currentProject =
-      project ?? (await this.projectService.getCurrentProject());
-    const { manifest } = await this.deployService.getLastDeployment(
-      currentProject.id,
-    );
+    const project = await this.projectService.getCurrentProject();
+    const { manifest } = await this.deployService.getLastDeployment(project.id);
 
     const response = await this.wrenAIAdaptor.generateRecommendationQuestions({
       manifest,
-      projectId: currentProject.id.toString(),
+      projectId: project.id.toString(),
       previousQuestions: input.previousQuestions,
-      ...this.getThreadRecommendationQuestionsConfig(currentProject),
+      ...this.getThreadRecommendationQuestionsConfig(project),
     });
     return { id: response.queryId };
   }
@@ -1221,11 +1224,8 @@ export class AskingService implements IAskingService {
       throw new Error(`Thread response ${responseId} not found`);
     }
 
-    if (
-      response.answerDetail?.status === status &&
-      (!content || response.answerDetail?.content === content)
-    ) {
-      return response;
+    if (response.answerDetail?.status === status) {
+      return;
     }
 
     const updatedResponse = await this.threadResponseRepository.updateOne(
@@ -1234,7 +1234,7 @@ export class AskingService implements IAskingService {
         answerDetail: {
           ...response.answerDetail,
           status,
-          content: content ?? response.answerDetail?.content,
+          content,
         },
       },
     );
@@ -1246,6 +1246,22 @@ export class AskingService implements IAskingService {
     const id = projectId ?? (await this.projectService.getCurrentProject()).id;
     const lastDeploy = await this.deployService.getLastDeployment(id);
     return lastDeploy.hash;
+  }
+
+  private async getProjectIdForAskingPayload(payload: AskingPayload) {
+    if (payload.projectId) {
+      return payload.projectId;
+    }
+    if (payload.threadId) {
+      const thread = await this.threadRepository.findOneBy({
+        id: payload.threadId,
+      });
+      if (!thread) {
+        throw new Error(`Thread ${payload.threadId} not found`);
+      }
+      return thread.projectId;
+    }
+    return (await this.projectService.getCurrentProject()).id;
   }
 
   private async getProjectForThreadResponse(threadResponse: ThreadResponse) {
@@ -1269,7 +1285,6 @@ export class AskingService implements IAskingService {
     if (!response) {
       throw new Error(`Thread response ${threadResponseId} not found`);
     }
-    await this.ensureThreadInCurrentProject(response.threadId);
 
     return await this.threadResponseRepository.createOne({
       sql: input.sql,
@@ -1297,7 +1312,6 @@ export class AskingService implements IAskingService {
     if (!originalThreadResponse) {
       throw new Error(`Thread response ${threadResponseId} not found`);
     }
-    await this.ensureThreadInCurrentProject(originalThreadResponse.threadId);
 
     const { createdThreadResponse } =
       await this.adjustmentBackgroundTracker.createAdjustmentTask({
@@ -1329,7 +1343,6 @@ export class AskingService implements IAskingService {
     if (!threadResponse) {
       throw new Error(`Thread response ${threadResponseId} not found`);
     }
-    await this.ensureThreadInCurrentProject(threadResponse.threadId);
 
     const { queryId } =
       await this.adjustmentBackgroundTracker.rerunAdjustmentTask({
@@ -1391,18 +1404,5 @@ export class AskingService implements IAskingService {
         language: WrenAILanguage[project.language] || WrenAILanguage.EN,
       },
     };
-  }
-
-  private async ensureThreadInCurrentProject(threadId: number): Promise<Thread> {
-    const [thread, project] = await Promise.all([
-      this.threadRepository.findOneBy({ id: threadId }),
-      this.projectService.getCurrentProject(),
-    ]);
-
-    if (!thread || thread.projectId !== project.id) {
-      throw new Error(`Thread ${threadId} not found in current project`);
-    }
-
-    return thread;
   }
 }

@@ -1,9 +1,5 @@
 import { Knex } from 'knex';
-import {
-  BaseRepository,
-  IBasicRepository,
-  IQueryOptions,
-} from './baseRepository';
+import { BaseRepository, IBasicRepository } from './baseRepository';
 import {
   camelCase,
   isPlainObject,
@@ -44,9 +40,6 @@ export interface DashboardItem {
   layout: DashboardItemLayout;
   detail: DashboardItemDetail;
   displayName?: string;
-  title?: string;
-  createdAt?: Date;
-  updatedAt?: Date;
 }
 
 export interface IDashboardItemRepository
@@ -57,35 +50,9 @@ export class DashboardItemRepository
   implements IDashboardItemRepository
 {
   private readonly jsonbColumns = ['layout', 'detail'];
-  private hasIdColumnCache: boolean | null = null;
-  private hasTitleColumnCache: boolean | null = null;
-  private hasDisplayNameColumnCache: boolean | null = null;
-  private columnCache = new Map<string, boolean>();
 
   constructor(knexPg: Knex) {
     super({ knexPg, tableName: 'dashboard_item' });
-  }
-
-  public override async createOne(
-    data: Partial<DashboardItem>,
-    queryOptions?: IQueryOptions,
-  ): Promise<DashboardItem> {
-    return await super.createOne(
-      await this.normalizeWriteData(data, queryOptions, true),
-      queryOptions,
-    );
-  }
-
-  public override async updateOne(
-    id: string | number,
-    data: Partial<DashboardItem>,
-    queryOptions?: IQueryOptions,
-  ): Promise<DashboardItem> {
-    return await super.updateOne(
-      id,
-      await this.normalizeWriteData(data, queryOptions),
-      queryOptions,
-    );
   }
 
   protected override transformFromDBData = (data: any) => {
@@ -103,10 +70,7 @@ export class DashboardItemRepository
       }
       return value;
     });
-    return {
-      ...transformData,
-      displayName: transformData.displayName || transformData.title,
-    } as DashboardItem;
+    return transformData as DashboardItem;
   };
 
   protected override transformToDBData = (data: any) => {
@@ -122,107 +86,4 @@ export class DashboardItemRepository
     });
     return mapKeys(transformedData, (_value, key) => snakeCase(key));
   };
-
-  private async normalizeWriteData(
-    data: Partial<DashboardItem>,
-    queryOptions?: IQueryOptions,
-    includeGeneratedId = false,
-  ): Promise<Partial<DashboardItem>> {
-    const executer = queryOptions?.tx ? queryOptions.tx : this.knex;
-    const [
-      hasIdColumn,
-      hasTitleColumn,
-      hasDisplayNameColumn,
-      hasCreatedAtColumn,
-      hasUpdatedAtColumn,
-    ] =
-      await Promise.all([
-        this.hasColumn('id', executer),
-        this.hasColumn('title', executer),
-        this.hasColumn('display_name', executer),
-        this.hasColumn('created_at', executer),
-        this.hasColumn('updated_at', executer),
-      ]);
-    const normalizedData: Partial<DashboardItem> = { ...data };
-    const displayName =
-      typeof data.displayName === 'string' ? data.displayName.trim() : '';
-    const chartTitle =
-      typeof data.detail?.chartSchema?.title === 'string'
-        ? data.detail.chartSchema.title.trim()
-        : '';
-    const title = displayName || chartTitle || 'Untitled dashboard item';
-
-    if (hasTitleColumn && !normalizedData.title) {
-      normalizedData.title = title;
-    }
-    if (!hasDisplayNameColumn) {
-      delete normalizedData.displayName;
-    }
-    if (
-      includeGeneratedId &&
-      hasIdColumn &&
-      normalizedData.id === undefined &&
-      this.isMssqlLike(executer)
-    ) {
-      normalizedData.id = await this.getNextId(executer);
-    }
-    if (includeGeneratedId && hasCreatedAtColumn && !normalizedData.createdAt) {
-      normalizedData.createdAt = new Date();
-    }
-    if (includeGeneratedId && hasUpdatedAtColumn && !normalizedData.updatedAt) {
-      normalizedData.updatedAt = normalizedData.createdAt || new Date();
-    }
-
-    return normalizedData;
-  }
-
-  private async hasColumn(column: string, executer: Knex | Knex.Transaction) {
-    if (this.columnCache.has(column)) {
-      return this.columnCache.get(column);
-    }
-    if (column === 'id' && this.hasIdColumnCache !== null) {
-      return this.hasIdColumnCache;
-    }
-    if (column === 'title' && this.hasTitleColumnCache !== null) {
-      return this.hasTitleColumnCache;
-    }
-    if (
-      column === 'display_name' &&
-      this.hasDisplayNameColumnCache !== null
-    ) {
-      return this.hasDisplayNameColumnCache;
-    }
-
-    const result = await executer.schema.hasColumn(this.tableName, column);
-    this.columnCache.set(column, result);
-    if (column === 'id') {
-      this.hasIdColumnCache = result;
-    }
-    if (column === 'title') {
-      this.hasTitleColumnCache = result;
-    }
-    if (column === 'display_name') {
-      this.hasDisplayNameColumnCache = result;
-    }
-    return result;
-  }
-
-  private isMssqlLike(executer: Knex | Knex.Transaction) {
-    const clientName = String(executer.client.config.client || '').toLowerCase();
-    const dialect = String((executer.client as any).dialect || '').toLowerCase();
-    const driverName = String(
-      (executer.client as any).driverName || '',
-    ).toLowerCase();
-
-    return [clientName, dialect, driverName].some((value) =>
-      value.includes('mssql'),
-    );
-  }
-
-  private async getNextId(executer: Knex | Knex.Transaction) {
-    const [row] = await executer(this.tableName).max<{ maxId: number | null }>(
-      'id as maxId',
-    );
-    return (row?.maxId || 0) + 1;
-  }
 }

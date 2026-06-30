@@ -77,9 +77,6 @@ export default function ViewSQLTabContent(props: AnswerResultProps) {
 
   const { hasNativeSQL, dataSourceType } = nativeSQLResult;
   const showNativeSQL = hasNativeSQL;
-  const dataSourceOption = dataSourceType
-    ? DATA_SOURCE_OPTIONS[dataSourceType]
-    : undefined;
 
   const sqls =
     nativeSQLResult.nativeSQLMode && nativeSQLResult.loading === false
@@ -135,17 +132,15 @@ export default function ViewSQLTabContent(props: AnswerResultProps) {
           <div>
             {nativeSQLResult.nativeSQLMode ? (
               <>
-                {dataSourceOption?.logo && (
-                  <Image
-                    className="mr-2"
-                    src={dataSourceOption.logo}
-                    alt={dataSourceOption.label}
-                    width="22"
-                    height="22"
-                  />
-                )}
+                <Image
+                  className="mr-2"
+                  src={DATA_SOURCE_OPTIONS[dataSourceType].logo}
+                  alt={DATA_SOURCE_OPTIONS[dataSourceType].label}
+                  width="22"
+                  height="22"
+                />
                 <Text className="gray-8 text-medium text-sm">
-                  {dataSourceOption?.label || 'Original SQL'}
+                  {DATA_SOURCE_OPTIONS[dataSourceType].label}
                 </Text>
               </>
             ) : (

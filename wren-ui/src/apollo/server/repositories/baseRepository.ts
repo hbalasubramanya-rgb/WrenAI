@@ -57,7 +57,6 @@ export const coerceBoolean = (value: unknown): boolean => {
 export class BaseRepository<T> implements IBasicRepository<T> {
   protected knex: Knex;
   protected tableName: string;
-  private hasIdColumnCache: boolean | null = null;
 
   constructor({ knexPg, tableName }: { knexPg: Knex; tableName: string }) {
     this.knex = knexPg;
@@ -119,29 +118,23 @@ export class BaseRepository<T> implements IBasicRepository<T> {
 
   public async createOne(data: Partial<T>, queryOptions?: IQueryOptions) {
     const executer = queryOptions?.tx ? queryOptions.tx : this.knex;
-    const insertValue = await this.prepareInsertData(data, executer);
     const [result] = await executer(this.tableName)
-      .insert(insertValue)
+      .insert(this.transformToDBData(data))
       .returning('*');
     return this.transformFromDBData(result);
   }
 
   public async createMany(data: Partial<T>[], queryOptions?: IQueryOptions) {
     const executer = queryOptions?.tx ? queryOptions.tx : this.knex;
-    const preparedData = await this.prepareInsertManyData(data, executer);
-    if (preparedData.length === 0) {
-      return [];
-    }
-
-    const batchSize = this.getCreateManyBatchSize(preparedData);
-    const batchCount = Math.ceil(preparedData.length / batchSize);
+    const batchSize = 100;
+    const batchCount = Math.ceil(data.length / batchSize);
     const result = [];
     for (let i = 0; i < batchCount; i++) {
       const start = i * batchSize;
-      const end = Math.min((i + 1) * batchSize, preparedData.length);
-      const batchValues = preparedData.slice(start, end);
+      const end = Math.min((i + 1) * batchSize, data.length);
+      const batchValues = data.slice(start, end);
       const chunk = await executer(this.tableName)
-        .insert(batchValues)
+        .insert(batchValues.map(this.transformToDBData))
         .returning('*');
       result.push(...chunk);
     }
@@ -173,14 +166,8 @@ export class BaseRepository<T> implements IBasicRepository<T> {
     queryOptions?: IQueryOptions,
   ) {
     const executer = queryOptions?.tx ? queryOptions.tx : this.knex;
-    let deleted = 0;
-    for (const batch of this.toWhereInBatches(ids)) {
-      deleted += await executer
-        .from(this.tableName)
-        .whereIn('id', batch)
-        .delete();
-    }
-    return deleted;
+    const builder = executer.from(this.tableName).whereIn('id', ids).delete();
+    return await builder;
   }
 
   public deleteAllBy = async (
@@ -211,119 +198,4 @@ export class BaseRepository<T> implements IBasicRepository<T> {
 
   protected transformFromDBData = (data: any): T =>
     this.defaultTransformFromDBData(data);
-
-  protected getMssqlWhereInBatchSize() {
-    return 2000;
-  }
-
-  protected toWhereInBatches<TValue>(values: TValue[]) {
-    const client = String(this.knex.client.config.client || '').toLowerCase();
-    const batchSize =
-      client === 'mssql'
-        ? this.getMssqlWhereInBatchSize()
-        : Math.max(values.length, 1);
-    const batches: TValue[][] = [];
-    for (let index = 0; index < values.length; index += batchSize) {
-      batches.push(values.slice(index, index + batchSize));
-    }
-    return batches;
-  }
-
-  protected getCreateManyBatchSize(insertValues: any[]) {
-    const defaultBatchSize = 100;
-    if (insertValues.length === 0) {
-      return defaultBatchSize;
-    }
-
-    const client = String(this.knex.client.config.client || '').toLowerCase();
-    if (client !== 'mssql') {
-      return defaultBatchSize;
-    }
-
-    const parameterLimit = 2100;
-    const safetyMargin = 100;
-    const columnCount = Math.max(
-      ...insertValues.map((value) => Object.keys(value).length),
-      1,
-    );
-
-    return Math.max(
-      1,
-      Math.min(
-        defaultBatchSize,
-        Math.floor((parameterLimit - safetyMargin) / columnCount),
-      ),
-    );
-  }
-
-  private isMssql(executer: Knex | Knex.Transaction) {
-    return executer.client.config.client === 'mssql';
-  }
-
-  private async hasIdColumn(executer: Knex | Knex.Transaction) {
-    if (this.hasIdColumnCache !== null) {
-      return this.hasIdColumnCache;
-    }
-
-    const hasIdColumn = await executer.schema.hasColumn(this.tableName, 'id');
-    this.hasIdColumnCache = hasIdColumn;
-    return hasIdColumn;
-  }
-
-  private async getNextId(executer: Knex | Knex.Transaction) {
-    const [row] = await executer(this.tableName).max<{ maxId: number | null }>(
-      'id as maxId',
-    );
-    return (row?.maxId || 0) + 1;
-  }
-
-  private async prepareInsertData(
-    data: Partial<T>,
-    executer: Knex | Knex.Transaction,
-  ) {
-    const dbData = this.transformToDBData(data);
-    if (!this.isMssql(executer)) {
-      return dbData;
-    }
-
-    if (!(await this.hasIdColumn(executer)) || dbData.id !== undefined) {
-      return dbData;
-    }
-
-    return {
-      ...dbData,
-      id: await this.getNextId(executer),
-    };
-  }
-
-  private async prepareInsertManyData(
-    data: Partial<T>[],
-    executer: Knex | Knex.Transaction,
-  ) {
-    const dbData = data.map((item) => this.transformToDBData(item));
-    if (!this.isMssql(executer) || !(await this.hasIdColumn(executer))) {
-      return dbData;
-    }
-
-    const missingIdIndexes = dbData.reduce<number[]>((acc, item, index) => {
-      if (item.id === undefined) {
-        acc.push(index);
-      }
-      return acc;
-    }, []);
-
-    if (!missingIdIndexes.length) {
-      return dbData;
-    }
-
-    let nextId = await this.getNextId(executer);
-    for (const index of missingIdIndexes) {
-      dbData[index] = {
-        ...dbData[index],
-        id: nextId++,
-      };
-    }
-
-    return dbData;
-  }
 }

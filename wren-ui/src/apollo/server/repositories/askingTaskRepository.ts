@@ -1,9 +1,5 @@
 import { Knex } from 'knex';
-import {
-  BaseRepository,
-  IBasicRepository,
-  IQueryOptions,
-} from './baseRepository';
+import { BaseRepository, IBasicRepository } from './baseRepository';
 import {
   camelCase,
   isPlainObject,
@@ -39,7 +35,6 @@ export class AskingTaskRepository
   implements IAskingTaskRepository
 {
   private readonly jsonbColumns = ['detail'];
-  private hasIdentityIdPromise?: Promise<boolean>;
 
   constructor(knexPg: Knex) {
     super({ knexPg, tableName: 'asking_task' });
@@ -47,41 +42,6 @@ export class AskingTaskRepository
 
   public async findByQueryId(queryId: string): Promise<AskingTask | null> {
     return this.findOneBy({ queryId });
-  }
-
-  public override async createOne(
-    data: Partial<AskingTask>,
-    queryOptions?: IQueryOptions,
-  ): Promise<AskingTask> {
-    return super.createOne(
-      await this.withMssqlId(this.withTimestamps(data), queryOptions),
-      queryOptions,
-    );
-  }
-
-  public override async createMany(
-    data: Partial<AskingTask>[],
-    queryOptions?: IQueryOptions,
-  ): Promise<AskingTask[]> {
-    return super.createMany(
-      await this.withMssqlIds(data.map(this.withTimestamps), queryOptions),
-      queryOptions,
-    );
-  }
-
-  public override async updateOne(
-    id: string | number,
-    data: Partial<AskingTask>,
-    queryOptions?: IQueryOptions,
-  ): Promise<AskingTask> {
-    return super.updateOne(
-      id,
-      {
-        ...data,
-        updatedAt: data.updatedAt ?? new Date(),
-      },
-      queryOptions,
-    );
   }
 
   protected override transformFromDBData = (data: any) => {
@@ -113,92 +73,5 @@ export class AskingTaskRepository
       }
     });
     return mapKeys(transformedData, (_value, key) => snakeCase(key));
-  };
-
-  private withTimestamps = (
-    data: Partial<AskingTask>,
-  ): Partial<AskingTask> => {
-    const now = new Date();
-    return {
-      ...data,
-      createdAt: data.createdAt ?? now,
-      updatedAt: data.updatedAt ?? now,
-    };
-  };
-
-  private isMssql = () =>
-    String(this.knex.client.config.client || '').toLowerCase() === 'mssql';
-
-  private hasIdentityId = async (): Promise<boolean> => {
-    if (!this.isMssql()) {
-      return true;
-    }
-
-    if (!this.hasIdentityIdPromise) {
-      this.hasIdentityIdPromise = this.knex('INFORMATION_SCHEMA.COLUMNS')
-        .select('COLUMN_NAME')
-        .where({
-          TABLE_SCHEMA: 'dbo',
-          TABLE_NAME: this.tableName,
-          COLUMN_NAME: 'id',
-        })
-        .whereRaw(
-          "COLUMNPROPERTY(OBJECT_ID(TABLE_SCHEMA + '.' + TABLE_NAME), COLUMN_NAME, 'IsIdentity') = 1",
-        )
-        .first()
-        .then(Boolean);
-    }
-
-    return this.hasIdentityIdPromise;
-  };
-
-  private withMssqlId = async (
-    data: Partial<AskingTask>,
-    queryOptions?: IQueryOptions,
-  ): Promise<Partial<AskingTask>> => {
-    if (
-      (data.id !== undefined && data.id !== null) ||
-      !this.isMssql() ||
-      (await this.hasIdentityId())
-    ) {
-      return data;
-    }
-
-    const executer = queryOptions?.tx ? queryOptions.tx : this.knex;
-    const [row] = await executer(this.tableName).max<{ maxId?: number }>({
-      maxId: 'id',
-    });
-    return {
-      ...data,
-      id: Number(row?.maxId || 0) + 1,
-    };
-  };
-
-  private withMssqlIds = async (
-    data: Partial<AskingTask>[],
-    queryOptions?: IQueryOptions,
-  ): Promise<Partial<AskingTask>[]> => {
-    if (
-      data.every((item) => item.id !== undefined && item.id !== null) ||
-      !this.isMssql() ||
-      (await this.hasIdentityId())
-    ) {
-      return data;
-    }
-
-    const executer = queryOptions?.tx ? queryOptions.tx : this.knex;
-    const [row] = await executer(this.tableName).max<{ maxId?: number }>({
-      maxId: 'id',
-    });
-    let nextId = Number(row?.maxId || 0) + 1;
-    return data.map((item) => {
-      if (item.id !== undefined && item.id !== null) {
-        return item;
-      }
-      return {
-        ...item,
-        id: nextId++,
-      };
-    });
   };
 }

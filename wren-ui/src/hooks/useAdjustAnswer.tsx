@@ -127,28 +127,17 @@ export default function useAdjustAnswer(threadId?: number) {
           if (threadResponsePollingSessionRef.current !== pollingSessionId) return;
         }
 
-        let shouldContinuePolling = true;
         try {
           const request = fetchThreadResponse({
             variables: { responseId },
-          });
-          threadResponsePollingRequestRef.current = request.then(
-            () => undefined,
-          );
-          const result = await request;
-          const task = result.data?.threadResponse?.adjustmentTask;
-          if (!task || getIsFinished(task.status)) {
-            shouldContinuePolling = false;
-            stopThreadResponsePolling();
-          }
+          }).then(() => undefined);
+          threadResponsePollingRequestRef.current = request;
+          await request;
         } catch (error) {
           console.error(error);
         } finally {
           threadResponsePollingRequestRef.current = null;
-          if (
-            shouldContinuePolling &&
-            threadResponsePollingSessionRef.current === pollingSessionId
-          ) {
+          if (threadResponsePollingSessionRef.current === pollingSessionId) {
             threadResponsePollingRef.current = setTimeout(
               run,
               threadResponsePollingDelayRef.current,

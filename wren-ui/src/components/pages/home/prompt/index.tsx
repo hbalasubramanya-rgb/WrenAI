@@ -4,7 +4,6 @@ import {
   useState,
   forwardRef,
   useImperativeHandle,
-  useRef,
 } from 'react';
 import styled from 'styled-components';
 import { PROCESS_STATE } from '@/utils/enum';
@@ -17,7 +16,6 @@ import { AskPromptData } from '@/hooks/useAskPrompt';
 import {
   CreateThreadInput,
   CreateThreadResponseInput,
-  ThreadResponseAnswerStatus,
 } from '@/apollo/client/graphql/__types__';
 
 interface Props {
@@ -86,7 +84,6 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
   const error = useMemo(() => askingTask?.error || null, [askingTask?.error]);
   const [showResult, setShowResult] = useState(false);
   const [question, setQuestion] = useState('');
-  const persistedTaskIdRef = useRef<string | null>(null);
   const currentProcessState = useMemo(
     () => askProcessState.currentState,
     [askProcessState.currentState],
@@ -124,68 +121,13 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
     const taskId = askingTask?.queryId;
     if (!taskId || !question) return;
 
-    persistedTaskIdRef.current = taskId;
     onCreateResponse && (await onCreateResponse({ question, taskId }));
     setShowResult(false);
   };
 
-  useEffect(() => {
-    const taskId = askingTask?.queryId;
-    if (!taskId || !question || persistedTaskIdRef.current === taskId) return;
-
-    const type = askingTask?.type;
-    const status = askingTask?.status;
-
-    const persistResult = async (
-      payload: CreateThreadInput | CreateThreadResponseInput,
-    ) => {
-      persistedTaskIdRef.current = taskId;
-      await onCreateResponse?.(payload);
-      setShowResult(false);
-    };
-
-    if (
-      type === 'GENERAL' &&
-      askingStreamTask &&
-      status === 'FINISHED' &&
-      !loading
-    ) {
-      void persistResult({
-        question,
-        taskId,
-        answerStatus: ThreadResponseAnswerStatus.FINISHED,
-        answerContent: askingStreamTask,
-      });
-      return;
-    }
-
-    if (status === 'FAILED' && askingTask?.error) {
-      void persistResult({
-        question,
-        taskId,
-        answerStatus: ThreadResponseAnswerStatus.FAILED,
-        answerErrorCode: askingTask.error.code,
-        answerErrorShortMessage: askingTask.error.shortMessage,
-        answerErrorMessage: askingTask.error.message,
-      });
-    }
-  }, [
-    askingTask?.queryId,
-    askingTask?.type,
-    askingTask?.status,
-    askingTask?.error?.code,
-    askingTask?.error?.shortMessage,
-    askingTask?.error?.message,
-    askingStreamTask,
-    question,
-    loading,
-    onCreateResponse,
-  ]);
-
   const closeResult = () => {
     askProcessState.resetState();
     setQuestion('');
-    persistedTaskIdRef.current = null;
     onStopStreaming && onStopStreaming();
     onStopRecommend && onStopRecommend();
   };

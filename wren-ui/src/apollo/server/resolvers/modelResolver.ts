@@ -13,7 +13,7 @@ import {
   RelationData,
   UpdateRelationData,
 } from '../types';
-import { getLogger, transformUniqueInvalidColumnName } from '@server/utils';
+import { getLogger, transformInvalidColumnName } from '@server/utils';
 import { DeployResponse } from '../services/deployService';
 import { safeFormatSQL } from '@server/utils/sqlFormat';
 import { isEmpty, isNil } from 'lodash';
@@ -200,22 +200,19 @@ export class ModelResolver {
   }
 
   public async checkModelSync(_root: any, _args: any, ctx: IContext) {
-    try {
-      const { id } = await ctx.projectService.getCurrentProject();
-      const { manifest } = await ctx.mdlService.makeCurrentModelMDL();
-      const lastDeploy = await ctx.deployService.getLastDeployment(id);
-      const inProgressDeployment =
-        await ctx.deployService.getInProgressDeployment(id);
-      if (inProgressDeployment) {
-        return { status: SyncStatusEnum.IN_PROGRESS };
-      }
-      return ctx.deployService.isSameDeployment(manifest, id, lastDeploy)
-        ? { status: SyncStatusEnum.SYNCRONIZED }
-        : { status: SyncStatusEnum.UNSYNCRONIZED };
-    } catch (err: any) {
-      logger.error(`checkModelSync failed: ${err.message}`, err);
-      return { status: SyncStatusEnum.UNSYNCRONIZED };
+    const { id } = await ctx.projectService.getCurrentProject();
+    const { manifest } = await ctx.mdlService.makeCurrentModelMDL();
+    const currentHash = ctx.deployService.createMDLHash(manifest, id);
+    const lastDeploy = await ctx.deployService.getLastDeployment(id);
+    const lastDeployHash = lastDeploy?.hash;
+    const inProgressDeployment =
+      await ctx.deployService.getInProgressDeployment(id);
+    if (inProgressDeployment) {
+      return { status: SyncStatusEnum.IN_PROGRESS };
     }
+    return currentHash == lastDeployHash
+      ? { status: SyncStatusEnum.SYNCRONIZED }
+      : { status: SyncStatusEnum.UNSYNCRONIZED };
   }
 
   public async deploy(
@@ -394,17 +391,13 @@ export class ModelResolver {
     const compactColumns = dataSourceTable.columns.filter((c) =>
       fields.includes(c.name),
     );
-    const usedReferenceNames = new Set<string>();
     const columnValues = compactColumns.map(
       (column) =>
         ({
           modelId: model.id,
           isCalculated: false,
           displayName: column.name,
-          referenceName: transformUniqueInvalidColumnName(
-            column.name,
-            usedReferenceNames,
-          ),
+          referenceName: transformInvalidColumnName(column.name),
           sourceColumnName: column.name,
           type: column.type || 'string',
           notNull: column.notNull || false,
@@ -493,11 +486,6 @@ export class ModelResolver {
 
     // create columns
     if (toCreateColumns.length) {
-      const usedReferenceNames = new Set(
-        existingColumns
-          .filter(({ id }) => !toDeleteColumnIds.includes(id))
-          .map(({ referenceName }) => referenceName.toLowerCase()),
-      );
       const compactColumns = sourceTableColumns.filter((sourceColumn) =>
         toCreateColumns.includes(sourceColumn.name),
       );
@@ -507,10 +495,7 @@ export class ModelResolver {
           isCalculated: false,
           displayName: column.name,
           sourceColumnName: column.name,
-          referenceName: transformUniqueInvalidColumnName(
-            column.name,
-            usedReferenceNames,
-          ),
+          referenceName: transformInvalidColumnName(column.name),
           type: column.type || 'string',
           notNull: column.notNull,
           isPk: primaryKey === column.name,

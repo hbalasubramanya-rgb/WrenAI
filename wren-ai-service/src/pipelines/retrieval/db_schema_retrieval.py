@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import ast
 import logging
 import sys
@@ -21,6 +23,7 @@ from src.pipelines.common import (
     normalize_data_type,
 )
 from src.utils import trace_cost
+
 if TYPE_CHECKING:
     from src.web.v1.services.ask import AskHistory
 else:
@@ -128,15 +131,11 @@ def _build_view_ddl(content: dict) -> str:
 def expand_business_terms_for_retrieval(query: str) -> str:
     normalized = (query or "").lower()
     analytics_terms = {
-        "business unit",
         "pcb",
         "repair",
         "debug",
         "turnaround",
         "failure",
-        "failure code",
-        "failure category",
-        "failure pattern",
         "resolved",
         "trend",
         "volume",
@@ -182,80 +181,26 @@ def expand_business_terms_for_retrieval(query: str) -> str:
         [
             query,
             "Business analytics aliases:",
-            "throughput trend volume count counts average total ranking top bottom grouped distribution",
-            "business unit manufacturing unit department location site plant team region category status",
-            "repair trends repair volume repair counts debug entries debug fixes failure code",
+            "repair trends repair volume repair counts debug entries debug fixes",
+            "average debug hours turnaround time resolved entries failure category failure code",
             "monthly trend quarter grouped by month bar chart line chart",
-            "top common failures most common failure categories",
-            "failure patterns category occurrences material workorder serial number",
             "sales revenue amount sales value sales performance salesperson ranking",
             "customer sales top customers customer growth orders invoices margin quantity",
         ]
     )
 
 
-def _is_project_wide_analysis_query(query: str) -> bool:
-    normalized = (query or "").lower()
-    if not normalized:
-        return False
-
-    analysis_terms = {
-        "average",
-        "avg",
-        "bar chart",
-        "breakdown",
-        "chart",
-        "completed",
-        "compare",
-        "count",
-        "counts",
-        "distribution",
-        "group by",
-        "grouped",
-        "highest",
-        "line chart",
-        "lowest",
-        "maximum",
-        "minimum",
-        "monthly",
-        "most common",
-        "number of",
-        "pie chart",
-        "quarter",
-        "rank",
-        "ranking",
-        "recommend",
-        "recommended",
-        "show",
-        "status",
-        "sum",
-        "total",
-        "totals",
-        "top",
-        "trend",
-        "volume",
-    }
-    return any(term in normalized for term in analysis_terms)
-
-
-def _dedupe_documents(documents: list[Document]) -> list[Document]:
-    deduped: list[Document] = []
-    seen: set[tuple[str, str, str]] = set()
-    for document in documents:
-        key = (
-            str(document.meta.get("name", "")),
-            str(document.meta.get("type", "")),
-            document.content,
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(document)
-    return deduped
-
-
 @observe(capture_input=False, capture_output=False)
-async def embedding(query: str, embedder: Any, histories: list[AskHistory]) -> dict:
+async def embedding(
+    query: str,
+    embedder: Any,
+    histories: list[AskHistory],
+    tables: Optional[list[str]] = None,
+) -> dict:
+    if tables:
+        logger.info("Skipping embedding retrieval for explicit tables: %s", tables)
+        return {}
+
     if query:
         if histories:
             previous_query_summaries = [history.question for history in histories]
@@ -306,13 +251,20 @@ async def table_retrieval(
 
 @observe(capture_input=False)
 async def dbschema_retrieval(
-    query: str, table_retrieval: dict, project_id: str, dbschema_retriever: Any
+    query: str,
+    table_retrieval: dict,
+    project_id: str,
+    dbschema_retriever: Any,
+    tables: Optional[list[str]] = None,
 ) -> list[Document]:
-    tables = table_retrieval.get("documents", [])
     table_names = []
-    for table in tables:
-        content = ast.literal_eval(table.content)
-        table_names.append(content["name"])
+    if tables:
+        table_names.extend(tables)
+    else:
+        retrieved_tables = table_retrieval.get("documents", [])
+        for table in retrieved_tables:
+            content = ast.literal_eval(table.content)
+            table_names.append(content["name"])
 
     table_name_conditions = [
         {"field": "name", "operator": "==", "value": table_name}
@@ -334,22 +286,7 @@ async def dbschema_retrieval(
             )
 
         results = await dbschema_retriever.run(query_embedding=[], filters=filters)
-        documents = results["documents"]
-        if project_id and _is_project_wide_analysis_query(query):
-            all_project_results = await dbschema_retriever.run(
-                query_embedding=[],
-                filters={
-                    "operator": "AND",
-                    "conditions": [
-                        {"field": "type", "operator": "==", "value": "TABLE_SCHEMA"},
-                        {"field": "project_id", "operator": "==", "value": project_id},
-                    ],
-                },
-            )
-            documents = _dedupe_documents(
-                documents + all_project_results.get("documents", [])
-            )
-        return documents
+        return results["documents"]
 
     filters = {
         "operator": "AND",
@@ -671,7 +608,7 @@ class DbSchemaRetrieval(BasicPipeline):
         histories: Optional[list[AskHistory]] = None,
         enable_column_pruning: bool = False,
     ):
-        logger.info("Ask Retrieval pipeline is running...")
+        logger.debug("Ask Retrieval pipeline is running...")
         return await self._pipe.execute(
             ["construct_retrieval_results"],
             inputs={

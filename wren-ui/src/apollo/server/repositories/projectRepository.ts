@@ -2,7 +2,7 @@ import { Knex } from 'knex';
 import {
   BaseRepository,
   IBasicRepository,
-  IQueryOptions,
+  coerceBoolean,
 } from './baseRepository';
 import {
   camelCase,
@@ -191,8 +191,6 @@ export interface Project {
   questionsError?: object;
   projectType?: WorkspaceProjectType;
   isCurrent?: boolean;
-  createdAt?: Date;
-  updatedAt?: Date;
 }
 
 export interface IProjectRepository extends IBasicRepository<Project> {
@@ -207,69 +205,9 @@ export class ProjectRepository
   implements IProjectRepository
 {
   private jsonTypeColumns = ['questions', 'questions_error', 'connection_info'];
-  private hasIdentityIdPromise?: Promise<boolean>;
 
   constructor(knexPg: Knex) {
     super({ knexPg, tableName: 'project' });
-  }
-
-  public override async createOne(
-    data: Partial<Project>,
-    queryOptions?: IQueryOptions,
-  ): Promise<Project> {
-    const timestamped = this.withTimestamps(data);
-    try {
-      return await super.createOne(
-        await this.withMssqlId(timestamped, queryOptions),
-        queryOptions,
-      );
-    } catch (error) {
-      if (!this.shouldRetryManualId(error, timestamped)) {
-        throw error;
-      }
-
-      return await super.createOne(
-        await this.withMssqlId(timestamped, queryOptions, true),
-        queryOptions,
-      );
-    }
-  }
-
-  public override async createMany(
-    data: Partial<Project>[],
-    queryOptions?: IQueryOptions,
-  ): Promise<Project[]> {
-    const timestamped = data.map(this.withTimestamps);
-    try {
-      return await super.createMany(
-        await this.withMssqlIds(timestamped, queryOptions),
-        queryOptions,
-      );
-    } catch (error) {
-      if (!this.shouldRetryManualId(error, timestamped)) {
-        throw error;
-      }
-
-      return await super.createMany(
-        await this.withMssqlIds(timestamped, queryOptions, true),
-        queryOptions,
-      );
-    }
-  }
-
-  public override async updateOne(
-    id: string | number,
-    data: Partial<Project>,
-    queryOptions?: IQueryOptions,
-  ): Promise<Project> {
-    return super.updateOne(
-      id,
-      {
-        ...data,
-        updatedAt: data.updatedAt ?? new Date(),
-      },
-      queryOptions,
-    );
   }
 
   public async getCurrentProject() {
@@ -340,13 +278,13 @@ export class ProjectRepository
       camelCase(key),
     );
     if (Object.prototype.hasOwnProperty.call(camelCaseData, 'isCurrent')) {
-      camelCaseData.isCurrent = this.normalizeProjectBoolean(camelCaseData.isCurrent);
+      camelCaseData.isCurrent = coerceBoolean(camelCaseData.isCurrent);
     }
     return camelCaseData as Project;
   };
 
-  public override transformToDBData: (data: Partial<Project>) => any = (
-    data: Partial<Project>,
+  public override transformToDBData: (data: Project) => any = (
+    data: Project,
   ) => {
     if (!isPlainObject(data)) {
       throw new Error('Unexpected db data');
@@ -360,131 +298,4 @@ export class ProjectRepository
     });
     return formattedData;
   };
-
-  private normalizeProjectBoolean(value: unknown): boolean {
-    if (typeof value === 'boolean') {
-      return value;
-    }
-    if (typeof value === 'number') {
-      return value === 1;
-    }
-    if (typeof value === 'string') {
-      return ['1', 'true'].includes(value.toLowerCase());
-    }
-    return Boolean(value);
-  }
-
-  private isMssql = () =>
-    String(this.knex.client.config.client || '').toLowerCase() === 'mssql';
-
-  private withTimestamps = (data: Partial<Project>): Partial<Project> => {
-    const now = new Date();
-    return {
-      ...data,
-      createdAt: data.createdAt ?? now,
-      updatedAt: data.updatedAt ?? now,
-    };
-  };
-
-  private hasIdentityId = async (): Promise<boolean> => {
-    if (!this.isMssql()) {
-      return true;
-    }
-
-    if (!this.hasIdentityIdPromise) {
-      this.hasIdentityIdPromise = this.knex('INFORMATION_SCHEMA.COLUMNS')
-        .select('COLUMN_NAME')
-        .where({
-          TABLE_SCHEMA: 'dbo',
-          TABLE_NAME: this.tableName,
-          COLUMN_NAME: 'id',
-        })
-        .whereRaw(
-          "COLUMNPROPERTY(OBJECT_ID(TABLE_SCHEMA + '.' + TABLE_NAME), COLUMN_NAME, 'IsIdentity') = 1",
-        )
-        .first()
-        .then(Boolean);
-    }
-
-    return this.hasIdentityIdPromise;
-  };
-
-  private withMssqlId = async (
-    data: Partial<Project>,
-    queryOptions?: IQueryOptions,
-    forceManualId = false,
-  ): Promise<Partial<Project>> => {
-    if (
-      (data.id !== undefined && data.id !== null) ||
-      !this.isMssql() ||
-      (!forceManualId && (await this.hasIdentityId()))
-    ) {
-      return data;
-    }
-
-    const executer = queryOptions?.tx ? queryOptions.tx : this.knex;
-    const [row] = await executer(this.tableName).max<{ maxId?: number }>({
-      maxId: 'id',
-    });
-    return {
-      ...data,
-      id: Number(row?.maxId || 0) + 1,
-    };
-  };
-
-  private withMssqlIds = async (
-    data: Partial<Project>[],
-    queryOptions?: IQueryOptions,
-    forceManualId = false,
-  ): Promise<Partial<Project>[]> => {
-    if (
-      data.every((item) => item.id !== undefined && item.id !== null) ||
-      !this.isMssql() ||
-      (!forceManualId && (await this.hasIdentityId()))
-    ) {
-      return data;
-    }
-
-    const executer = queryOptions?.tx ? queryOptions.tx : this.knex;
-    const [row] = await executer(this.tableName).max<{ maxId?: number }>({
-      maxId: 'id',
-    });
-    let nextId = Number(row?.maxId || 0) + 1;
-    return data.map((item) => {
-      if (item.id !== undefined && item.id !== null) {
-        return item;
-      }
-      return {
-        ...item,
-        id: nextId++,
-      };
-    });
-  };
-
-  private shouldRetryManualId = (
-    error: unknown,
-    data: Partial<Project> | Partial<Project>[],
-  ): boolean => {
-    if (!this.isMssql()) {
-      return false;
-    }
-
-    const hasMissingId = Array.isArray(data)
-      ? data.some((item) => item.id === undefined || item.id === null)
-      : data.id === undefined || data.id === null;
-
-    if (!hasMissingId) {
-      return false;
-    }
-
-    const message =
-      error instanceof Error
-        ? error.message
-        : typeof error === 'string'
-          ? error
-          : '';
-
-    return message.includes("Cannot insert the value NULL into column 'id'");
-  };
 }
-

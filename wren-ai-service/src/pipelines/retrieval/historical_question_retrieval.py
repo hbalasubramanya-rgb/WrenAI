@@ -51,8 +51,7 @@ async def count_documents(
         else None
     )
 
-    count = await view_questions_store.count_documents(filters=filters)
-    return count
+    return await view_questions_store.count_documents(filters=filters)
 
 
 @observe(capture_input=False, capture_output=False)

@@ -98,8 +98,7 @@ export default function HomeThread() {
 
   const { data, updateQuery: updateThreadQuery } = useThreadQuery({
     variables: { threadId },
-    fetchPolicy: 'network-only',
-    nextFetchPolicy: 'network-only',
+    fetchPolicy: 'cache-and-network',
     skip: threadId === null,
     onError: () => router.push(Path.Home),
   });
@@ -244,28 +243,17 @@ export default function HomeThread() {
           }
         }
 
-        let shouldContinuePolling = true;
         try {
           const request = fetchThreadResponse({
             variables: { responseId },
-          });
-          threadResponsePollingRequestRef.current = request.then(
-            () => undefined,
-          );
-          const result = await request;
-          if (getThreadResponseIsFinished(result.data?.threadResponse)) {
-            shouldContinuePolling = false;
-            stopThreadResponsePolling();
-            setShowRecommendedQuestions(true);
-          }
+          }).then(() => undefined);
+          threadResponsePollingRequestRef.current = request;
+          await request;
         } catch (error) {
           console.error(error);
         } finally {
           threadResponsePollingRequestRef.current = null;
-          if (
-            shouldContinuePolling &&
-            threadResponsePollingSessionRef.current === pollingSessionId
-          ) {
+          if (threadResponsePollingSessionRef.current === pollingSessionId) {
             threadResponsePollingRef.current = setTimeout(
               run,
               threadResponsePollingDelayRef.current,
@@ -320,26 +308,17 @@ export default function HomeThread() {
           }
         }
 
-        let shouldContinuePolling = true;
         try {
           const request = fetchThreadRecommendationQuestions({
             variables: { threadId: nextThreadId },
-          });
-          threadRecommendationPollingRequestRef.current = request.then(
-            () => undefined,
-          );
-          const result = await request;
-          const task = result.data?.getThreadRecommendationQuestions;
-          if (!task || isRecommendedFinished(task.status)) {
-            shouldContinuePolling = false;
-            stopThreadRecommendationPolling();
-          }
+          }).then(() => undefined);
+          threadRecommendationPollingRequestRef.current = request;
+          await request;
         } catch (error) {
           console.error(error);
         } finally {
           threadRecommendationPollingRequestRef.current = null;
           if (
-            shouldContinuePolling &&
             threadRecommendationPollingSessionRef.current === pollingSessionId
           ) {
             threadRecommendationPollingRef.current = setTimeout(

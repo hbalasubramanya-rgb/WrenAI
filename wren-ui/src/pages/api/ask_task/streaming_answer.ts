@@ -29,31 +29,6 @@ class ContentMap {
 
 const contentMap = new ContentMap();
 
-const parseSSEMessages = (chunk: Buffer): string[] => {
-  return chunk
-    .toString('utf-8')
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith('data: '))
-    .map((line) => line.slice('data: '.length).trim())
-    .filter(Boolean)
-    .flatMap((payload) => {
-      try {
-        const eventData = JSON.parse(payload);
-        return eventData?.message ? [String(eventData.message)] : [];
-      } catch (error) {
-        console.error(`Failed to parse streaming answer payload: ${payload}`);
-        return [];
-      }
-    });
-};
-
-const buildFallbackAnswer = (question: string) =>
-  [
-    `I found results for: **${question}**.`,
-    '',
-    'The result table below contains the data returned from the active datasource. Use the visible fields and rows to review the detailed records, and switch to the chart tab when a visualization is available.',
-  ].join('\n');
-
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse,
@@ -94,26 +69,29 @@ export default async function handler(
     }
 
     const stream = await wrenAIAdaptor.streamTextBasedAnswer(queryId);
-    let streamEnded = false;
 
     stream.on('data', (chunk) => {
-      for (const message of parseSSEMessages(chunk)) {
-        contentMap.appendContent(queryId, message);
+      // pass the chunk directly to the client
+      const chunkString = chunk.toString('utf-8');
+      let message = '';
+      const match = chunkString.match(/data: {"message":"([\s\S]*?)"}/);
+      if (match && match[1]) {
+        message = match[1];
+      } else {
+        console.log(`not able to match: ${chunkString}`);
       }
+      contentMap.appendContent(queryId, message);
       res.write(chunk);
     });
 
     stream.on('end', () => {
-      streamEnded = true;
-      const finalContent =
-        contentMap.getContent(queryId)?.trim() || buildFallbackAnswer(response.question);
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
       res.end();
       askingService
         .changeThreadResponseAnswerDetailStatus(
           Number(responseId),
           ThreadResponseAnswerStatus.FINISHED,
-          finalContent,
+          contentMap.getContent(queryId),
         )
         .then(() => {
           console.log(
@@ -144,9 +122,6 @@ export default async function handler(
 
     // destroy the stream if the client closes the connection
     req.on('close', () => {
-      if (streamEnded) {
-        return;
-      }
       stream.destroy();
       askingService
         .changeThreadResponseAnswerDetailStatus(

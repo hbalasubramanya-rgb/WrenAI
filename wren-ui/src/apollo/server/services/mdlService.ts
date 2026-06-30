@@ -3,7 +3,6 @@ import {
   IModelNestedColumnRepository,
   IModelColumnRepository,
   IModelRepository,
-  Project,
   IProjectRepository,
   IRelationRepository,
   IViewRepository,
@@ -16,7 +15,7 @@ export interface MakeCurrentModelMDLResult {
 }
 export interface IMDLService {
   makeCurrentModelMDL(): Promise<MakeCurrentModelMDLResult>;
-  makeModelMDL(project: Project): Promise<MakeCurrentModelMDLResult>;
+  makeProjectModelMDL(projectId: number): Promise<MakeCurrentModelMDLResult>;
 }
 
 export class MDLService implements IMDLService {
@@ -52,11 +51,14 @@ export class MDLService implements IMDLService {
 
   public async makeCurrentModelMDL() {
     const project = await this.projectRepository.getCurrentProject();
-    return this.makeModelMDL(project);
+    return this.makeProjectModelMDL(project.id);
   }
 
-  public async makeModelMDL(project: Project) {
-    const projectId = project.id;
+  public async makeProjectModelMDL(projectId: number) {
+    const project = await this.projectRepository.findOneBy({ id: projectId });
+    if (!project) {
+      throw new Error(`Project ${projectId} not found`);
+    }
     const models = await this.modelRepository.findAllBy({ projectId });
     const modelIds = models.map((m) => m.id);
     const columns =

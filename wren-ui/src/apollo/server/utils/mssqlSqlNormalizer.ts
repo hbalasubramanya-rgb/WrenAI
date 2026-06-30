@@ -113,13 +113,6 @@ const replaceInventedDateFields = (sql: string): string => {
   return sql;
 };
 
-const rewriteMssqlDatepartFunctions = (sql: string): string =>
-  sql.replace(
-    /\bDATEPART\(\s*'?\s*(YEAR|MONTH|DAY)\s*'?\s*,\s*((?:[^()]|\([^()]*\))+?)\s*\)/gi,
-    (_match, part, expression) =>
-      `EXTRACT(${String(part).toUpperCase()} FROM ${String(expression).trim()})`,
-  );
-
 const replaceCwSalesAliases = (sql: string): string => {
   if (!/\bdbo_(?:qSales1|tblSalesHistory|tblSales)\b/i.test(sql)) {
     return sql;
@@ -156,9 +149,9 @@ const replaceCwSalesAliases = (sql: string): string => {
 const replaceInventedTimeBuckets = (sql: string): string => {
   const timestampExpression = inferMssqlTimestampExpression(sql);
   const bucketExpressions: Record<string, string> = {
-    YEAR: `EXTRACT(YEAR FROM ${timestampExpression})`,
-    MONTH: `EXTRACT(MONTH FROM ${timestampExpression})`,
-    DAY: `EXTRACT(DAY FROM ${timestampExpression})`,
+    YEAR: `DATEPART(YEAR, ${timestampExpression})`,
+    MONTH: `DATEPART(MONTH, ${timestampExpression})`,
+    DAY: `DATEPART(DAY, ${timestampExpression})`,
   };
 
   sql = sql.replace(/\bSELECT\b(?<body>.*?)(?=\bFROM\b)/is, (match, _body, _offset, _source, groups) => {
@@ -167,17 +160,10 @@ const replaceInventedTimeBuckets = (sql: string): string => {
       const alias = bucket.toLowerCase();
       body = body.replace(
         new RegExp(
-          String.raw`(^|,)\s*(?:(?:"[^"]+"\.)"?${bucket}"?|(?:\[[^\]]+\]\.)(?:\[${bucket}\]|${bucket})|\b[A-Za-z_][A-Za-z0-9_]*\.${bucket}\b|"${bucket}"|\[${bucket}\]|\b${bucket}\b)(?:\s+(?:AS\s+)?(?:"([^"]+)"|\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_]*)))?(?=\s*(?:,|$))`,
+          String.raw`(^|,)\s*(?:(?:"[^"]+"\.)"?${bucket}"?|(?:\[[^\]]+\]\.)(?:\[${bucket}\]|${bucket})|\b[A-Za-z_][A-Za-z0-9_]*\.${bucket}\b|"${bucket}"|\[${bucket}\]|\b${bucket}\b)(?=\s*(?:,|$))`,
           'gi',
         ),
-        (_match, prefix, quotedAlias, bracketAlias, bareAlias) => {
-          const selectedAlias = quotedAlias
-            ? `"${quotedAlias}"`
-            : bracketAlias
-              ? `[${bracketAlias}]`
-              : bareAlias || `"${alias}"`;
-          return `${prefix} ${expression} AS ${selectedAlias}`;
-        },
+        `$1 ${expression} AS "${alias}"`,
       );
     });
     return `SELECT${body}`;
@@ -206,7 +192,7 @@ const replaceInventedTimeBuckets = (sql: string): string => {
       body = body.replace(new RegExp(String.raw`"${bucket}"`, 'gi'), expression);
       body = body.replace(new RegExp(String.raw`\[${bucket}\]`, 'gi'), expression);
       body = body.replace(
-        new RegExp(String.raw`(?<![('\.\w])\b${bucket}\b(?!['\w])`, 'gi'),
+        new RegExp(String.raw`(?<!DATEPART\()\b${bucket}\b`, 'gi'),
         expression,
       );
     });
@@ -214,76 +200,6 @@ const replaceInventedTimeBuckets = (sql: string): string => {
   });
 
   return sql;
-};
-
-const rewriteMssqlLimitClause = (sql: string): string => {
-  const limitMatch = sql.match(/\s+LIMIT\s+(\d+)\s*;?\s*$/i);
-  if (!limitMatch || limitMatch.index === undefined) {
-    return sql;
-  }
-
-  const limit = limitMatch[1];
-  const withoutLimit = sql.slice(0, limitMatch.index).trimEnd();
-  if (/\bSELECT\s+(?:DISTINCT\s+)?TOP\s+(?:\(\s*)?\d+/i.test(withoutLimit)) {
-    return withoutLimit;
-  }
-
-  if (/^\s*SELECT\s+DISTINCT\b/i.test(withoutLimit)) {
-    return withoutLimit.replace(/\bSELECT\s+DISTINCT\b/i, `SELECT DISTINCT TOP ${limit}`);
-  }
-
-  if (/^\s*SELECT\b/i.test(withoutLimit)) {
-    return withoutLimit.replace(/\bSELECT\b/i, `SELECT TOP ${limit}`);
-  }
-
-  return withoutLimit;
-};
-
-const unwrapSimpleMssqlWhereParentheses = (sql: string): string =>
-  sql.replace(
-    /\bWHERE\s*\(\s*([^()]+?)\s*\)(?=\s*(?:GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|FETCH|UNION|$))/gis,
-    'WHERE $1',
-  );
-
-const normalizeMssqlGeneratedSqlSyntax = (sql: string): string => {
-  sql = sql.replace(/\s+NULLS\s+(?:LAST|FIRST)\b/gi, '');
-  sql = unwrapSimpleMssqlWhereParentheses(sql);
-  return rewriteMssqlLimitClause(sql);
-};
-
-const quoteMssqlDboModelReferences = (sql: string): string => {
-  sql = sql.replace(
-    /(?:"[^"]+"\.){1,2}"(dbo_[A-Za-z0-9_]+)"/gi,
-    '"$1"',
-  );
-  sql = sql.replace(
-    /\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\.(dbo_[A-Za-z0-9_]+)\b/g,
-    '"$1"',
-  );
-  sql = sql.replace(
-    /\[[^\]]+\]\.\[[^\]]+\]\.\[(dbo_[A-Za-z0-9_]+)\]/gi,
-    '"$1"',
-  );
-  sql = sql.replace(/\bdbo\.([A-Za-z0-9_]+)\b/g, '"dbo_$1"');
-
-  const quotedModels = new Set<string>();
-  sql.replace(/"dbo_[A-Za-z0-9_]+"/gi, (match) => {
-    quotedModels.add(match.slice(1, -1));
-    return match;
-  });
-
-  const bareDboModel = /\bdbo_[A-Za-z0-9_]+\b/g;
-  return sql.replace(bareDboModel, (modelName, offset, source) => {
-    if (source[offset - 1] === '"' || source[offset + modelName.length] === '"') {
-      return modelName;
-    }
-
-    if (!quotedModels.has(modelName)) {
-      quotedModels.add(modelName);
-    }
-
-    return `"${modelName}"`;
-  });
 };
 
 const replaceBadFailurePatternJoins = (sql: string): string => {
@@ -372,29 +288,8 @@ const replaceRepairLogThroughputShape = (sql: string): string => {
   ].join(' ');
 };
 
-const replaceTicketCycleTurnaroundShape = (sql: string): string => {
-  if (
-    !/\bdbo_ticket_cycles\b/i.test(sql) ||
-    !/\b(?:turnaround_time|avg_turnaround_time)\b/i.test(sql) ||
-    !/\bMONTH\b|DATEPART\(\s*'?\s*MONTH/i.test(sql)
-  ) {
-    return sql;
-  }
-
-  return [
-    'SELECT EXTRACT(YEAR FROM "dbo_ticket_cycles"."created_at") AS "year",',
-    'EXTRACT(MONTH FROM "dbo_ticket_cycles"."created_at") AS "month",',
-    'AVG(DATEDIFF(\'second\', "dbo_ticket_cycles"."start_date", "dbo_ticket_cycles"."end_date")) AS "avg_turnaround_seconds"',
-    'FROM "dbo_ticket_cycles"',
-    'WHERE "dbo_ticket_cycles"."start_date" IS NOT NULL',
-    'AND "dbo_ticket_cycles"."end_date" IS NOT NULL',
-    'GROUP BY EXTRACT(YEAR FROM "dbo_ticket_cycles"."created_at"), EXTRACT(MONTH FROM "dbo_ticket_cycles"."created_at")',
-    'ORDER BY EXTRACT(YEAR FROM "dbo_ticket_cycles"."created_at") ASC, EXTRACT(MONTH FROM "dbo_ticket_cycles"."created_at") ASC',
-  ].join(' ');
-};
-
 const replaceInventedFailureCategory = (sql: string): string => {
-  if (!/\bdbo_repair_logs\b/i.test(sql) || !/\bfailure[_\s]+category\b/i.test(sql)) {
+  if (!/\bdbo_repair_logs\b/i.test(sql) || !/\bfailure_category\b/i.test(sql)) {
     return sql;
   }
 
@@ -404,19 +299,18 @@ const replaceInventedFailureCategory = (sql: string): string => {
     (match, _body, _offset, _source, groups) => {
       let body = groups?.body || '';
       body = body.replace(
-        /(^|,)\s*(?:(?:"dbo_repair_logs"|\[dbo_repair_logs\]|dbo_repair_logs)\s*\.\s*)?(?:"failure[_\s]+category"|\[failure[_\s]+category\]|failure[_\s]+category)(?=\s*(?:,|$))/gi,
+        /(^|,)\s*(?:(?:"dbo_repair_logs"|\[dbo_repair_logs\]|dbo_repair_logs)\s*\.\s*)?(?:"failure_category"|\[failure_category\]|failure_category)(?=\s*(?:,|$))/gi,
         `$1 ${failureCodeExpression} AS "failure_category"`,
       );
       return `SELECT${body}`;
     },
   );
-  sql = sql.replace(/\bAS\s+failure\s+category\b/gi, 'AS "failure_category"');
 
   const clausePattern =
     /\b(GROUP\s+BY|ORDER\s+BY|HAVING)\b(?<body>.*?)(?=\b(?:ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT|OFFSET|FETCH|UNION|WHERE)\b|$)/gis;
   return sql.replace(clausePattern, (match, clause, _body, _offset, _source, groups) => {
     const body = (groups?.body || '').replace(
-      /(?:(?:"dbo_repair_logs"|\[dbo_repair_logs\]|dbo_repair_logs)\s*\.\s*)?(?:"failure[_\s]+category"|\[failure[_\s]+category\]|failure[_\s]+category)/gi,
+      /(?:(?:"dbo_repair_logs"|\[dbo_repair_logs\]|dbo_repair_logs)\s*\.\s*)?(?:"failure_category"|\[failure_category\]|failure_category)/gi,
       failureCodeExpression,
     );
     return `${clause}${body}`;
@@ -457,9 +351,6 @@ const replaceInventedKnowledgeArticleFields = (sql: string): string => {
       author_id: '"author"',
     },
     dbo_kb_articles: {
-      category: '"category"',
-      section: '"category"',
-      article_section: '"category"',
       created_by: '"created_by_user_id"',
       created_by_user: '"created_by_user_id"',
       author: '"created_by_user_id"',
@@ -510,32 +401,49 @@ const replaceInventedKnowledgeArticleFields = (sql: string): string => {
   return sql;
 };
 
+const rewriteMssqlLimitClause = (sql: string): string => {
+  const limitMatch = sql.match(/\s+LIMIT\s+(\d+)\s*;?\s*$/i);
+  if (!limitMatch || limitMatch.index === undefined) {
+    return sql;
+  }
+
+  const limit = limitMatch[1];
+  const withoutLimit = sql.slice(0, limitMatch.index).trimEnd();
+  if (/\bSELECT\s+(?:DISTINCT\s+)?TOP\s*\(?\s*\d+\s*\)?/i.test(withoutLimit)) {
+    return withoutLimit;
+  }
+
+  return withoutLimit.replace(
+    /\bSELECT\s+(DISTINCT\s+)?/i,
+    (match) => `${match}TOP ${limit} `,
+  );
+};
+
+const normalizeMssqlGeneratedSqlSyntax = (sql: string): string => {
+  sql = sql.replace(/\s+NULLS\s+(?:LAST|FIRST)\b/gi, '');
+  return rewriteMssqlLimitClause(sql);
+};
+
 export const normalizeMssqlGeneratedSqlFields = (
   sql: string,
   dataSource: DataSourceName,
 ): string => {
-  sql = sql.replace(/\\"/g, '"');
-  sql = quoteMssqlDboModelReferences(sql);
-
   if (dataSource !== DataSourceName.MSSQL) {
     return sql;
   }
 
+  sql = sql.replace(/\\"/g, '"');
   sql = normalizeMssqlGeneratedSqlSyntax(sql);
-  sql = rewriteMssqlDatepartFunctions(sql);
   sql = replaceRelativeCurrentDateCalls(sql);
   sql = replaceCwSalesAliases(sql);
   sql = replaceInventedDateFields(sql);
   sql = replaceRepairLogThroughputShape(sql);
-  sql = replaceTicketCycleTurnaroundShape(sql);
   sql = replacePcbThroughputFields(sql);
   sql = replaceInventedFailureCategory(sql);
   sql = replaceInventedReportFields(sql);
   sql = replaceInventedKnowledgeArticleFields(sql);
   sql = replaceInventedTimeBuckets(sql);
   sql = replaceBadFailurePatternJoins(sql);
-  sql = rewriteMssqlDatepartFunctions(sql);
-  sql = quoteMssqlDboModelReferences(sql);
   return normalizeMssqlGeneratedSqlSyntax(sql);
 };
 
@@ -554,7 +462,7 @@ export const rewriteMssqlDatepartAliasReferences = (
     String.raw`(?:"([^"]+)"|\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_]*))`;
   const aliasPatterns = [
     new RegExp(
-      String.raw`\b(DATEPART\(\s*'?\s*(?:YEAR|MONTH|DAY)\s*'?\s*,\s*((?:[^()]|\([^()]*\))+?)\s*\))\s+AS\s+${aliasTargetPattern}`,
+      String.raw`\b(DATEPART\(\s*(?:YEAR|MONTH|DAY)\s*,\s*((?:[^()]|\([^()]*\))+?)\s*\))\s+AS\s+${aliasTargetPattern}`,
       'gi',
     ),
     new RegExp(

@@ -119,24 +119,10 @@ def prompt(
     sql_functions: list[SqlFunction] | None = None,
     sql_knowledge: SqlKnowledge | None = None,
 ) -> dict:
-    schema_context = "\n".join(documents or []).lower()
-    has_pcb_context = any(
-        term in schema_context
-        for term in (
-            "dbo_debugentries",
-            "debugentryid",
-            "failure_patterns",
-            "repair_logs",
-            "failedat",
-            "failuresys",
-            "workorder",
-        )
-    )
     _prompt = prompt_builder.run(
         query=query,
         data_source=data_source,
         documents=documents,
-        has_pcb_context=has_pcb_context,
         valid_table_names=construct_valid_table_names(documents),
         sql_generation_reasoning=sql_generation_reasoning,
         instructions=construct_instructions(
@@ -251,7 +237,7 @@ class SQLGeneration(BasicPipeline):
         allow_data_preview: bool = False,
         sql_knowledge: SqlKnowledge | None = None,
     ):
-        logger.info("SQL Generation pipeline is running...")
+        logger.debug("SQL Generation pipeline is running...")
 
         metadata = await retrieve_metadata(project_id or "", self._retriever)
 

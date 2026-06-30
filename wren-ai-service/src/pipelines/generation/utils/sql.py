@@ -248,14 +248,14 @@ def _rewrite_mssql_bucket_functions(sql: str) -> str:
     sql = re.sub(
         rf"DATEADD\(\s*month\s*,\s*DATEDIFF\(\s*month\s*,\s*0\s*,\s*{expression_pattern}\s*\)\s*,\s*0\s*\)",
         lambda m: (
-            f"(EXTRACT(YEAR FROM {m.group(1)}) * 100 + EXTRACT(MONTH FROM {m.group(1)}))"
+            f"(DATEPART(YEAR, {m.group(1)}) * 100 + DATEPART(MONTH, {m.group(1)}))"
         ),
         sql,
         flags=re.IGNORECASE,
     )
     sql = re.sub(
         rf"DATEADD\(\s*year\s*,\s*DATEDIFF\(\s*year\s*,\s*0\s*,\s*{expression_pattern}\s*\)\s*,\s*0\s*\)",
-        lambda m: f"EXTRACT(YEAR FROM {m.group(1)})",
+        lambda m: f"DATEPART(YEAR, {m.group(1)})",
         sql,
         flags=re.IGNORECASE,
     )
@@ -270,124 +270,124 @@ def _rewrite_temporal_bucket_functions(sql: str) -> str:
                 rf"DATEPART\(\s*YEAR\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(YEAR FROM {m.group(1)})",
+            lambda m: f"DATEPART(YEAR, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATEPART\(\s*MONTH\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(MONTH FROM {m.group(1)})",
+            lambda m: f"DATEPART(MONTH, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATEPART\(\s*DAY\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(DAY FROM {m.group(1)})",
+            lambda m: f"DATEPART(DAY, {m.group(1)})",
         ),
         (
             re.compile(rf"YEAR\(\s*{expression_pattern}\s*\)", re.IGNORECASE),
-            lambda m: f"EXTRACT(YEAR FROM {m.group(1)})",
+            lambda m: f"DATEPART(YEAR, {m.group(1)})",
         ),
         (
             re.compile(rf"MONTH\(\s*{expression_pattern}\s*\)", re.IGNORECASE),
-            lambda m: f"EXTRACT(MONTH FROM {m.group(1)})",
+            lambda m: f"DATEPART(MONTH, {m.group(1)})",
         ),
         (
             re.compile(rf"DAY\(\s*{expression_pattern}\s*\)", re.IGNORECASE),
-            lambda m: f"EXTRACT(DAY FROM {m.group(1)})",
+            lambda m: f"DATEPART(DAY, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATETRUNC\(\s*MONTH\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(MONTH FROM {m.group(1)})",
+            lambda m: f"DATEPART(MONTH, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATETRUNC\(\s*YEAR\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(YEAR FROM {m.group(1)})",
+            lambda m: f"DATEPART(YEAR, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATE_TRUNC\(\s*'?\s*MONTH\s*'?\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(MONTH FROM {m.group(1)})",
+            lambda m: f"DATEPART(MONTH, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATE_TRUNC\(\s*'?\s*YEAR\s*'?\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(YEAR FROM {m.group(1)})",
+            lambda m: f"DATEPART(YEAR, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATE_PART\(\s*'?\s*YEAR\s*'?\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(YEAR FROM {m.group(1)})",
+            lambda m: f"DATEPART(YEAR, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATE_PART\(\s*'?\s*MONTH\s*'?\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(MONTH FROM {m.group(1)})",
+            lambda m: f"DATEPART(MONTH, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATE_PART\(\s*'?\s*DAY\s*'?\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(DAY FROM {m.group(1)})",
+            lambda m: f"DATEPART(DAY, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"EXTRACT\(\s*YEAR\s+FROM\s+{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(YEAR FROM {m.group(1)})",
+            lambda m: f"DATEPART(YEAR, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"EXTRACT\(\s*MONTH\s+FROM\s+{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(MONTH FROM {m.group(1)})",
+            lambda m: f"DATEPART(MONTH, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"EXTRACT\(\s*DAY\s+FROM\s+{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(DAY FROM {m.group(1)})",
+            lambda m: f"DATEPART(DAY, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATEPART\(\s*'YEAR'\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(YEAR FROM {m.group(1)})",
+            lambda m: f"DATEPART(YEAR, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATEPART\(\s*'MONTH'\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(MONTH FROM {m.group(1)})",
+            lambda m: f"DATEPART(MONTH, {m.group(1)})",
         ),
         (
             re.compile(
                 rf"DATEPART\(\s*'DAY'\s*,\s*{expression_pattern}\s*\)",
                 re.IGNORECASE,
             ),
-            lambda m: f"EXTRACT(DAY FROM {m.group(1)})",
+            lambda m: f"DATEPART(DAY, {m.group(1)})",
         ),
     ]
 
@@ -422,9 +422,9 @@ def _rewrite_mssql_to_date_buckets(sql: str) -> str:
     def make_day_bucket(expression: str) -> str:
         timestamp_expression = _qualify_mssql_temporal_expression(expression, sql)
         return (
-            f"(EXTRACT(YEAR FROM {timestamp_expression}) * 10000 + "
-            f"EXTRACT(MONTH FROM {timestamp_expression}) * 100 + "
-            f"EXTRACT(DAY FROM {timestamp_expression}))"
+            f"(DATEPART(YEAR, {timestamp_expression}) * 10000 + "
+            f"DATEPART(MONTH, {timestamp_expression}) * 100 + "
+            f"DATEPART(DAY, {timestamp_expression}))"
         )
 
     rewritten = re.sub(
@@ -715,64 +715,35 @@ def _rewrite_mssql_repair_log_turnaround_trend_shape(sql: str) -> str:
         return sql
     if not re.search(r"\bavg_turnaround_time\b|\bturnaround\b", sql, flags=re.IGNORECASE):
         return sql
-    if not re.search(r"\bMONTH\b|DATEPART\(\s*'?\s*MONTH", sql, flags=re.IGNORECASE):
+    if not re.search(r"\bMONTH\b|DATEPART\(\s*MONTH", sql, flags=re.IGNORECASE):
         return sql
 
     return (
-        "SELECT EXTRACT(YEAR FROM \"dbo_repair_logs\".\"created_at\") AS \"year\", "
-        "EXTRACT(MONTH FROM \"dbo_repair_logs\".\"created_at\") AS \"month\", "
+        'SELECT DATEPART(YEAR, "dbo_repair_logs"."created_at") AS "year", '
+        'DATEPART(MONTH, "dbo_repair_logs"."created_at") AS "month", '
         'AVG(DATEDIFF(\'second\', "dbo_repair_logs"."created_at", '
         '"dbo_repair_logs"."updated_at")) AS "avg_turnaround_seconds" '
         'FROM "dbo_repair_logs" '
         'WHERE "dbo_repair_logs"."created_at" IS NOT NULL '
         'AND "dbo_repair_logs"."updated_at" IS NOT NULL '
-        "GROUP BY EXTRACT(YEAR FROM \"dbo_repair_logs\".\"created_at\"), "
-        "EXTRACT(MONTH FROM \"dbo_repair_logs\".\"created_at\") "
-        "ORDER BY EXTRACT(YEAR FROM \"dbo_repair_logs\".\"created_at\") ASC, "
-        "EXTRACT(MONTH FROM \"dbo_repair_logs\".\"created_at\") ASC"
-    )
-
-
-def _rewrite_mssql_ticket_cycle_turnaround_shape(sql: str) -> str:
-    if not re.search(r"\bdbo_ticket_cycles\b", sql, flags=re.IGNORECASE):
-        return sql
-    if not re.search(r"\bturnaround_time\b|\bavg_turnaround_time\b", sql, flags=re.IGNORECASE):
-        return sql
-    if not re.search(r"\bMONTH\b|DATEPART\(\s*'?\s*MONTH", sql, flags=re.IGNORECASE):
-        return sql
-
-    return (
-        'SELECT EXTRACT(YEAR FROM "dbo_ticket_cycles"."created_at") AS "year", '
-        'EXTRACT(MONTH FROM "dbo_ticket_cycles"."created_at") AS "month", '
-        'AVG(DATEDIFF(\'second\', "dbo_ticket_cycles"."start_date", '
-        '"dbo_ticket_cycles"."end_date")) AS "avg_turnaround_seconds" '
-        'FROM "dbo_ticket_cycles" '
-        'WHERE "dbo_ticket_cycles"."start_date" IS NOT NULL '
-        'AND "dbo_ticket_cycles"."end_date" IS NOT NULL '
-        'GROUP BY EXTRACT(YEAR FROM "dbo_ticket_cycles"."created_at"), '
-        'EXTRACT(MONTH FROM "dbo_ticket_cycles"."created_at") '
-        'ORDER BY EXTRACT(YEAR FROM "dbo_ticket_cycles"."created_at") ASC, '
-        'EXTRACT(MONTH FROM "dbo_ticket_cycles"."created_at") ASC'
+        'GROUP BY DATEPART(YEAR, "dbo_repair_logs"."created_at"), '
+        'DATEPART(MONTH, "dbo_repair_logs"."created_at") '
+        'ORDER BY DATEPART(YEAR, "dbo_repair_logs"."created_at") ASC, '
+        'DATEPART(MONTH, "dbo_repair_logs"."created_at") ASC'
     )
 
 
 def _rewrite_mssql_invented_failure_category(sql: str) -> str:
     if not re.search(r"\bdbo_repair_logs\b", sql, flags=re.IGNORECASE):
         return sql
-    if not re.search(r"\bfailure[_\s]+category\b", sql, flags=re.IGNORECASE):
+    if not re.search(r"\bfailure_category\b", sql, flags=re.IGNORECASE):
         return sql
 
     failure_code_expression = '"dbo_repair_logs"."failure_code"'
     rewritten = re.sub(
-        r'(?P<prefix>\bSELECT\s+|,\s*)(?:(?:"dbo_repair_logs"|\[dbo_repair_logs\]|dbo_repair_logs)\s*\.\s*)?(?:"failure[_\s]+category"|\[failure[_\s]+category\]|failure[_\s]+category)(?P<suffix>\s*(?:,|\bFROM\b))',
+        r'(?P<prefix>\bSELECT\s+|,\s*)(?:(?:"dbo_repair_logs"|\[dbo_repair_logs\]|dbo_repair_logs)\s*\.\s*)?(?:"failure_category"|\[failure_category\]|failure_category)(?P<suffix>\s*(?:,|\bFROM\b))',
         rf'\g<prefix>{failure_code_expression} AS "failure_category"\g<suffix>',
         sql,
-        flags=re.IGNORECASE,
-    )
-    rewritten = re.sub(
-        r"\bAS\s+failure\s+category\b",
-        'AS "failure_category"',
-        rewritten,
         flags=re.IGNORECASE,
     )
 
@@ -783,7 +754,7 @@ def _rewrite_mssql_invented_failure_category(sql: str) -> str:
 
     def replace_clause(match: re.Match[str]) -> str:
         body = re.sub(
-            r'(?:(?:"dbo_repair_logs"|\[dbo_repair_logs\]|dbo_repair_logs)\s*\.\s*)?(?:"failure[_\s]+category"|\[failure[_\s]+category\]|failure[_\s]+category)',
+            r'(?:(?:"dbo_repair_logs"|\[dbo_repair_logs\]|dbo_repair_logs)\s*\.\s*)?(?:"failure_category"|\[failure_category\]|failure_category)',
             failure_code_expression,
             match.group("body"),
             flags=re.IGNORECASE,
@@ -865,9 +836,6 @@ def _rewrite_mssql_invented_knowledge_article_fields(sql: str) -> str:
             "article_content": '"content"',
             "article_text": '"content"',
             "article_body": '"content"',
-            "category": '"category"',
-            "section": '"category"',
-            "article_section": '"category"',
             "created_by": '"created_by_user_id"',
             "created_by_user": '"created_by_user_id"',
             "author": '"created_by_user_id"',
@@ -942,9 +910,9 @@ def _rewrite_mssql_bare_time_bucket_identifiers(sql: str) -> str:
         return sql
 
     bucket_expressions = {
-        "year": f"EXTRACT(YEAR FROM {timestamp_expression})",
-        "month": f"EXTRACT(MONTH FROM {timestamp_expression})",
-        "day": f"EXTRACT(DAY FROM {timestamp_expression})",
+        "year": f"DATEPART(YEAR, {timestamp_expression})",
+        "month": f"DATEPART(MONTH, {timestamp_expression})",
+        "day": f"DATEPART(DAY, {timestamp_expression})",
     }
     rewritten = sql
 
@@ -954,39 +922,33 @@ def _rewrite_mssql_bare_time_bucket_identifiers(sql: str) -> str:
             rf'(?:"{bucket}"|\[{bucket}\]|{bucket})',
             re.IGNORECASE,
         )
-        select_pattern = re.compile(
-            r"\bSELECT\b(?P<body>.*?)(?=\bFROM\b)",
-            re.IGNORECASE | re.DOTALL,
+        select_identifier_pattern = re.compile(
+            rf'(?P<prefix>\bSELECT\s+|,\s*)"{bucket}"(?P<suffix>\s*(?:,|\bFROM\b))',
+            re.IGNORECASE,
+        )
+        select_bare_identifier_pattern = re.compile(
+            rf"(?P<prefix>\bSELECT\s+|,\s*){bucket}(?P<suffix>\s*(?:,|\bFROM\b))",
+            re.IGNORECASE,
+        )
+        select_qualified_identifier_pattern = re.compile(
+            rf'(?P<prefix>\bSELECT\s+|,\s*){qualified_bucket_pattern.pattern}(?P<suffix>\s*(?:,|\bFROM\b))',
+            re.IGNORECASE,
         )
 
-        def replace_select(match: re.Match[str]) -> str:
-            body = match.group("body")
-            items = _split_top_level_select_items(body)
-            if not items:
-                return match.group(0)
+        def replace_select_identifier(match: re.Match[str]) -> str:
+            prefix = match.group("prefix")
+            suffix = match.group("suffix")
+            return f'{prefix}{expression} AS "{bucket}"{suffix}'
 
-            rebuilt: list[str] = []
-            changed = False
-            bucket_select_item_pattern = re.compile(
-                rf"^(?P<identifier>(?:\"{bucket}\"|\[{bucket}\]|{bucket}|{qualified_bucket_pattern.pattern}))"
-                rf"(?:\s+(?:AS\s+)?(?P<alias>\"[^\"]+\"|\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?$",
-                re.IGNORECASE,
-            )
-            for item in items:
-                item_match = bucket_select_item_pattern.fullmatch(item.strip())
-                if item_match:
-                    alias = item_match.group("alias") or f'"{bucket}"'
-                    rebuilt.append(f"{expression} AS {alias}")
-                    changed = True
-                else:
-                    rebuilt.append(item)
-
-            if not changed:
-                return match.group(0)
-
-            return "SELECT " + ", ".join(rebuilt) + " "
-
-        rewritten = select_pattern.sub(replace_select, rewritten)
+        rewritten = select_qualified_identifier_pattern.sub(
+            replace_select_identifier, rewritten
+        )
+        rewritten = select_identifier_pattern.sub(
+            replace_select_identifier, rewritten
+        )
+        rewritten = select_bare_identifier_pattern.sub(
+            replace_select_identifier, rewritten
+        )
 
     clause_pattern = re.compile(
         r"\b(GROUP\s+BY|ORDER\s+BY|HAVING)\b(?P<body>.*?)(?=\b(?:ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT|OFFSET|FETCH|UNION|WHERE)\b|$)",
@@ -1015,7 +977,7 @@ def _rewrite_mssql_bare_time_bucket_identifiers(sql: str) -> str:
                 flags=re.IGNORECASE,
             )
             body = re.sub(
-                rf"(?<![('\.\w])\b{bucket}\b(?!['\w])",
+                rf"(?<!DATEPART\()\b{bucket}\b",
                 expression,
                 body,
                 flags=re.IGNORECASE,
@@ -1025,60 +987,16 @@ def _rewrite_mssql_bare_time_bucket_identifiers(sql: str) -> str:
     return clause_pattern.sub(replace_clause, rewritten)
 
 
-def _rewrite_mssql_limit_clause(sql: str) -> str:
-    limit_match = re.search(r"\s+LIMIT\s+(\d+)\s*;?\s*$", sql, flags=re.IGNORECASE)
-    if not limit_match:
-        return sql
-
-    limit = limit_match.group(1)
-    without_limit = sql[: limit_match.start()].rstrip()
-    if re.search(
-        r"\bSELECT\s+(?:DISTINCT\s+)?TOP\s+(?:\(\s*)?\d+",
-        without_limit,
-        flags=re.IGNORECASE,
-    ):
-        return without_limit
-
-    if re.match(r"\s*SELECT\s+DISTINCT\b", without_limit, flags=re.IGNORECASE):
-        return re.sub(
-            r"\bSELECT\s+DISTINCT\b",
-            f"SELECT DISTINCT TOP {limit}",
-            without_limit,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-
-    if re.match(r"\s*SELECT\b", without_limit, flags=re.IGNORECASE):
-        return re.sub(
-            r"\bSELECT\b",
-            f"SELECT TOP {limit}",
-            without_limit,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-
-    return without_limit
-
-
-def _unwrap_simple_mssql_where_parentheses(sql: str) -> str:
-    return re.sub(
-        r"\bWHERE\s*\(\s*([^()]+?)\s*\)(?=\s*(?:GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|FETCH|UNION|$))",
-        r"WHERE \1",
-        sql,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
-
 def _rewrite_mssql_datepart_alias_references(sql: str) -> str:
     datepart_alias_pattern = re.compile(
-        r"\b((?:DATEPART\(\s*'?\s*(?:YEAR|MONTH|DAY)\s*'?\s*,\s*((?:[^()]|\([^()]*\))+?)\s*\)|(?:YEAR|MONTH|DAY)\(\s*((?:[^()]|\([^()]*\))+?)\s*\)|EXTRACT\(\s*(?:YEAR|MONTH|DAY)\s+FROM\s+((?:[^()]|\([^()]*\))+?)\s*\)))\s+AS\s+(?:\"([^\"]+)\"|\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_]*))",
+        r"\b(DATEPART\(\s*(YEAR|MONTH|DAY)\s*,\s*((?:[^()]|\([^()]*\))+?)\s*\))\s+AS\s+(?:\"([^\"]+)\"|\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_]*))",
         re.IGNORECASE,
     )
     aliases: dict[str, str] = {}
 
     for match in datepart_alias_pattern.finditer(sql):
         expression = match.group(1)
-        alias = match.group(5) or match.group(6) or match.group(7)
+        alias = match.group(4) or match.group(5) or match.group(6)
         if alias:
             aliases[str(alias).lower()] = expression
 
@@ -1109,7 +1027,7 @@ def _rewrite_mssql_datepart_alias_references(sql: str) -> str:
                 flags=re.IGNORECASE,
             )
             body = re.sub(
-                rf"(?<![A-Za-z_\(])\b{re.escape(alias)}\b(?!\s*\()",
+                rf"(?<!DATEPART\()\b{re.escape(alias)}\b",
                 placeholder,
                 body,
                 flags=re.IGNORECASE,
@@ -1323,9 +1241,7 @@ def _rewrite_mssql_temporal_bucket_alias_references(sql: str) -> str:
 
     aliases: dict[str, str] = {}
     for item in _split_top_level_select_items(select_match.group("body")):
-        if not re.search(
-            r"\b(?:DATEPART|YEAR|MONTH|DAY|EXTRACT)\s*\(", item, flags=re.IGNORECASE
-        ):
+        if not re.search(r"\bDATEPART\s*\(", item, flags=re.IGNORECASE):
             continue
 
         alias_match = re.search(
@@ -1368,7 +1284,7 @@ def _rewrite_mssql_temporal_bucket_alias_references(sql: str) -> str:
                 flags=re.IGNORECASE,
             )
             body = re.sub(
-                rf"(?<![A-Za-z_\(])\b{re.escape(alias)}\b(?!\s*\()",
+                rf"(?<!DATEPART\()\b{re.escape(alias)}\b",
                 placeholder,
                 body,
                 flags=re.IGNORECASE,
@@ -1383,7 +1299,7 @@ def _rewrite_mssql_temporal_bucket_alias_references(sql: str) -> str:
 def _references_known_hallucination_prone_schema(sql: str) -> bool:
     return bool(
         re.search(
-            r"\b(?:dbo_repair_logs|dbo_ticket_cycles|dbo_DebugEntries|dbo_reports|dbo_knowledge_articles|dbo_kb_articles)\b",
+            r"\b(?:dbo_repair_logs|dbo_DebugEntries|dbo_reports|dbo_knowledge_articles|dbo_kb_articles)\b",
             sql,
             flags=re.IGNORECASE,
         )
@@ -1392,13 +1308,10 @@ def _references_known_hallucination_prone_schema(sql: str) -> bool:
 
 def _rewrite_known_schema_hallucinations(sql: str, now: datetime) -> str:
     normalized = _replace_relative_current_date_calls(sql, now)
-    normalized = _unwrap_simple_mssql_where_parentheses(normalized)
-    normalized = _rewrite_mssql_limit_clause(normalized)
     normalized = _rewrite_mssql_to_date_buckets(normalized)
     normalized = _rewrite_mssql_invented_date_identifiers(normalized)
     normalized = _rewrite_mssql_invented_repair_relationship_identifiers(normalized)
     normalized = _rewrite_mssql_repair_log_turnaround_trend_shape(normalized)
-    normalized = _rewrite_mssql_ticket_cycle_turnaround_shape(normalized)
     normalized = _rewrite_mssql_repair_log_throughput_shape(normalized)
     normalized = _rewrite_mssql_invented_pcb_throughput_identifiers(normalized)
     normalized = _rewrite_mssql_invented_failure_category(normalized)
@@ -1438,27 +1351,8 @@ def _rewrite_mssql_limit_clause(sql: str) -> str:
     )
 
 
-def _normalize_identifier_quote_syntax(sql: str) -> str:
-    normalized = re.sub(
-        r"`([^`]+)`",
-        lambda match: _quote_sql_identifier(match.group(1)),
-        sql,
-    )
-    normalized = re.sub(
-        r"\[([^\]]+)\]",
-        lambda match: _quote_sql_identifier(match.group(1)),
-        normalized,
-    )
-    normalized = re.sub(
-        r'"{2,}([A-Za-z_][A-Za-z0-9_$]*)"{2,}',
-        lambda match: _quote_sql_identifier(match.group(1)),
-        normalized,
-    )
-    return normalized
-
-
 def normalize_generation_result_sql(sql: str, data_source: str | None = None) -> str:
-    normalized = _normalize_identifier_quote_syntax(sql)
+    normalized = sql
     normalized_data_source = normalize_data_source(data_source)
 
     if normalized_data_source == "MSSQL":
@@ -1466,7 +1360,6 @@ def normalize_generation_result_sql(sql: str, data_source: str | None = None) ->
         normalized = re.sub(
             r"\s+NULLS\s+(?:LAST|FIRST)\b", "", normalized, flags=re.IGNORECASE
         )
-        normalized = _unwrap_simple_mssql_where_parentheses(normalized)
         normalized = _rewrite_mssql_limit_clause(normalized)
         normalized = re.sub(
             r"CAST\(\s*('(?:[^']|'')*')\s+AS\s+DATETIME(?:2|OFFSET)\s*\)",
@@ -1486,7 +1379,6 @@ def normalize_generation_result_sql(sql: str, data_source: str | None = None) ->
             normalized
         )
         normalized = _rewrite_mssql_repair_log_turnaround_trend_shape(normalized)
-        normalized = _rewrite_mssql_ticket_cycle_turnaround_shape(normalized)
         normalized = _rewrite_mssql_repair_log_throughput_shape(normalized)
         normalized = _rewrite_mssql_invented_pcb_throughput_identifiers(normalized)
         normalized = _rewrite_mssql_invented_failure_category(normalized)
@@ -1498,7 +1390,6 @@ def normalize_generation_result_sql(sql: str, data_source: str | None = None) ->
         normalized = _rewrite_temporal_bucket_functions(normalized)
         normalized = _rewrite_mssql_datepart_alias_references(normalized)
         normalized = _rewrite_mssql_temporal_bucket_alias_references(normalized)
-        normalized = _rewrite_mssql_bare_time_bucket_identifiers(normalized)
         normalized = _rewrite_mssql_limit_clause(normalized)
     elif _references_known_hallucination_prone_schema(normalized):
         normalized = _rewrite_known_schema_hallucinations(normalized, datetime.now())
@@ -1804,10 +1695,8 @@ _DEFAULT_TEXT_TO_SQL_RULES = """
 - You can only add "ORDER BY" and "LIMIT" to the final "UNION" result.
 - Never invent foreign key columns or relationship fields such as "FailurePatternID", "FailurePatternId", "TicketID", or "<Table>ID" unless that exact column appears in the DATABASE SCHEMA. Join only on explicit schema columns or explicit relationships.
 - Never invent time bucket columns such as "MONTH", "YEAR", "DAY", "month", "year", or "date" unless that exact column appears in the DATABASE SCHEMA. For monthly, yearly, or daily trends, apply a supported date/time bucket function from SQL FUNCTIONS to a real timestamp column from the selected table.
-- Every generated SQL query must be grounded only in the connected datasource metadata, deployed semantic model definitions, relationships, and DATABASE SCHEMA shown in the prompt. Do not use table names, column names, join paths, JSON keys, or business dimensions that are not explicitly present in that context.
 - For synced repair-log schemas, if "dbo_repair_logs" contains "created_at" and the user asks for monthly repair volume or repair trends, count repair rows and bucket "dbo_repair_logs"."created_at". Do not select, group by, or order by "dbo_repair_logs"."MONTH" or bare "MONTH" unless the schema explicitly contains that column.
-- For repair counts grouped by failure category, prefer the richest explicit category field exposed by the connected datasource. If the schema includes "dbo_DebugEntries", "dbo_DebugFixLogs", and "dbo_DebugFixes", group by "dbo_DebugFixes"."Description" after joining "dbo_DebugEntries"."DebugEntryId" = "dbo_DebugFixLogs"."DebugEntryId" and "dbo_DebugFixLogs"."FixId" = "dbo_DebugFixes"."Id". Otherwise use "dbo_repair_logs"."failure_code" only when that column appears in the schema. Do not invent "failure_category" unless it appears in the DATABASE SCHEMA.
-- For repair SLA compliance dashboard/chart requests, do not invent "DAY", "MONTH", "turnaround_time", "sla_due_at", or due-date fields. If the schema only exposes "dbo_repair_logs"."status" and no explicit SLA/duration/deadline column, return a status distribution using "dbo_repair_logs"."status" and COUNT(*) so the UI can render a grounded chart.
+- For repair counts grouped by failure category in synced repair-log schemas, use "dbo_repair_logs"."failure_code" when that column appears in the schema. Do not invent "failure_category" unless it appears in the DATABASE SCHEMA.
 - For top/bottom N questions, return exactly the business columns needed to answer the question. For example, "top 10 common failures" should return the failure field and the failure count.
 - For top/bottom N questions, prefer ORDER BY on the metric plus a row limit instead of adding ranking helper columns.
 - Do not include helper ranking columns such as "rank", "row_number", or "dense_rank" in the final SELECT unless the user explicitly asks to see ranks.
@@ -1817,30 +1706,22 @@ _DEFAULT_TEXT_TO_SQL_RULES = """
 _MSSQL_TEXT_TO_SQL_RULES = """
 ### MSSQL-SPECIFIC RULES ###
 - The target database is MSSQL.
-- Prefer parser-safe date bucket syntax such as EXTRACT(YEAR FROM "created_at") and EXTRACT(MONTH FROM "created_at").
+- Prefer native T-SQL date bucket syntax such as DATEPART(YEAR, "created_at") and DATEPART(MONTH, "created_at").
 - DO NOT use PostgreSQL-style or Trino-style date syntax such as DATE_TRUNC, DATETRUNC, INTERVAL, CURRENT_DATE, TIMESTAMP WITH TIME ZONE, TO_CHAR, TO_UNIXTIME, TO_TIMESTAMP, TO_TIMESTAMP_MILLIS, TO_TIMESTAMP_SECONDS, TO_TIMESTAMP_MICROS, TO_TIMESTAMP_NANOS, or :: casts.
 - DO NOT use JSON extraction functions or operators such as JSON_VALUE, JSON_QUERY, JSON_EXTRACT, JSON_EXTRACT_SCALAR, JSON_EXTRACT_ARRAY, json_value, json_extract, ->, or ->>. The MSSQL Wren/Ibis runtime does not support them.
 - If a table has a generic JSON/text column such as "data", do not assume keys inside it are queryable. Only use fields that are exposed as first-class columns in the DATABASE SCHEMA.
 - If a requested metric such as debug hours, risk score, repair cost, or turnaround time is only present inside a JSON/text column and is not exposed as a first-class column or calculated field, do not generate SQL that extracts it from JSON.
 - Never invent JSON-derived columns such as "repair_date", "repair_status", or "failure_code" unless they are explicitly listed as columns in the DATABASE SCHEMA.
 - For repair trend or repair volume questions, prefer explicit timestamp columns such as "created_at", "updated_at", "opened_at", or "closed_at" only when those exact columns appear in the selected table schema.
-- For repair SLA compliance charts on "dbo_repair_logs", use "dbo_repair_logs"."status" as the compliance/status dimension when no explicit SLA, due-date, duration, or turnaround column appears in the DATABASE SCHEMA. Never use invented "DAY", "MONTH", or "turnaround_time" fields for SLA compliance.
-- For repair counts grouped by failure category, use explicit exposed fields and schema-backed joins only. Prefer "dbo_DebugFixes"."Description" joined through "dbo_DebugFixLogs" when "dbo_DebugEntries"."DebugEntryId", "dbo_DebugFixLogs"."DebugEntryId", "dbo_DebugFixLogs"."FixId", and "dbo_DebugFixes"."Id" are present. Otherwise use "dbo_repair_logs"."failure_code" when present. Do not invent "dbo_repair_logs"."FailurePatternID"; only join to "dbo_failure_patterns" when an explicit join key or relationship exists in the DATABASE SCHEMA.
+- For repair counts grouped by failure category, use explicit exposed fields such as "dbo_repair_logs"."failure_code" when present. Do not invent "dbo_repair_logs"."FailurePatternID"; only join to "dbo_failure_patterns" when an explicit join key or relationship exists in the DATABASE SCHEMA.
 - For PCB/debug-entry failure charts, do not join "dbo_DebugEntries"."DebugEntryId" to "dbo_failure_patterns"."id"; those fields have incompatible types. If both "dbo_DebugEntries"."FailureSys" and "dbo_failure_patterns"."id" exist, join "dbo_DebugEntries"."FailureSys" = "dbo_failure_patterns"."id".
 - For PCB synced database questions:
     - Use "dbo_DebugEntries" for debug/PCB event records when the schema contains it.
     - Use columns such as "Material", "WorkOrder", "SerialNumber", "FailedAt", "DateIn", "DateOut", "Hours", "Priority", "Actions", "Notes", and "FailureSys" only when they appear in the schema.
     - Use "dbo_failure_patterns" for failure names, categories, severity, trend, occurrence counts, daily pattern summaries, and cost impact when those columns appear in the schema.
     - For throughput trends across manufacturing/business units, use "dbo_DebugEntries"."BusinessUnit" as the unit dimension and a real debug-entry timestamp such as "dbo_DebugEntries"."DateIn" or "dbo_DebugEntries"."FailedAt" for the trend bucket. Do not use "dbo_repair_logs"."ManufacturingUnit", "dbo_repair_logs"."MONTH", or invented manufacturing/date fields.
-    - For top/common PCB failure questions, first prefer grouping by "dbo_DebugFixes"."Description" and counting rows through the explicit "dbo_DebugEntries" -> "dbo_DebugFixLogs" -> "dbo_DebugFixes" join when those tables and join columns are in the schema. Otherwise prefer grouping by "dbo_failure_patterns"."name" or "dbo_failure_patterns"."category" and counting "dbo_DebugEntries"."DebugEntryId" after joining "dbo_DebugEntries"."FailureSys" = "dbo_failure_patterns"."id".
+    - For top/common PCB failure questions, prefer grouping by "dbo_failure_patterns"."name" or "dbo_failure_patterns"."category" and counting "dbo_DebugEntries"."DebugEntryId" after joining "dbo_DebugEntries"."FailureSys" = "dbo_failure_patterns"."id".
     - If a useful aggregate already exists in "dbo_failure_patterns" such as "occurrences", it can be used directly for top failure pattern questions without joining event rows.
-    - For requests such as "show top 10 most common PCB failures", "bar chart of failures by category", or "count of repairs grouped by failure category", generate SQL first. Do not answer with general charting guidance. Return the categorical failure field plus a count metric that can drive a bar chart.
-    - For failure-category charts, prefer one of these patterns depending on schema availability:
-        1. `GROUP BY "dbo_DebugFixes"."Description"` and `COUNT(*)` using the explicit "dbo_DebugEntries" -> "dbo_DebugFixLogs" -> "dbo_DebugFixes" join
-        2. `GROUP BY "dbo_failure_patterns"."category"` and `COUNT("dbo_DebugEntries"."DebugEntryId")`
-        3. `GROUP BY "dbo_failure_patterns"."name"` and `COUNT("dbo_DebugEntries"."DebugEntryId")`
-        4. `GROUP BY "dbo_repair_logs"."failure_code"` and `COUNT(*)`
-    - For chart-oriented questions, ensure the final SELECT contains only the chart-ready dimension and metric columns. Avoid prose-like outputs or helper columns.
 - For knowledge article tables:
     - Use "created_at" for year/month trend buckets. Do not select, group by, or order by invented "YEAR" or "MONTH" columns.
     - In "dbo_knowledge_articles", use "helpful" and "views" for effectiveness-style questions, and use "author" for creator/author groupings. Do not invent "effectiveness_score" or "created_by".
@@ -1849,11 +1730,11 @@ _MSSQL_TEXT_TO_SQL_RULES = """
 - Do not subtract timestamp/date columns directly. If a duration or turnaround column exists in the schema, select that column directly. If only start/end timestamps exist and the SQL FUNCTIONS section lists DATEDIFF, use DATEDIFF('second', <start_timestamp>, <end_timestamp>) for duration in seconds.
 - Resolve relative time phrases such as "last 12 months", "last month", or "this year" into absolute ISO timestamp boundaries using the current time context. Prefer closed-open literal ranges over runtime date arithmetic.
 - For month bucketing, prefer separate year/month fields:
-    - EXTRACT(YEAR FROM <timestamp_expression>) AS "year"
-    - EXTRACT(MONTH FROM <timestamp_expression>) AS "month"
+    - DATEPART(YEAR, <timestamp_expression>) AS "year"
+    - DATEPART(MONTH, <timestamp_expression>) AS "month"
   Then GROUP BY and ORDER BY the same year/month expressions.
-- Do not GROUP BY or ORDER BY quoted year/month aliases such as "YEAR" or "MONTH"; repeat the EXTRACT(...) expression instead.
-- For year bucketing, prefer EXTRACT(YEAR FROM <timestamp_expression>).
+- Do not GROUP BY or ORDER BY quoted year/month aliases such as "YEAR" or "MONTH"; repeat the DATEPART(...) expression instead.
+- For year bucketing, prefer DATEPART(YEAR, <timestamp_expression>).
 - For top/bottom N questions in MSSQL, prefer SELECT TOP (N) with ORDER BY over DENSE_RANK/ROW_NUMBER when the user did not explicitly request ranks.
 - For filtering a specific year such as 2025, prefer a closed-open range:
     - <timestamp_expression> >= '2025-01-01 00:00:00'
@@ -2140,7 +2021,7 @@ def get_metric_instructions(
 #### MSSQL Metric Notes ####
 - Resolve relative metric time windows into absolute ISO date ranges whenever current time context is available.
 - Do not use DATE_TRUNC, DATETRUNC, DATEADD, DATEDIFF, INTERVAL, CURRENT_DATE, or TIMESTAMP WITH TIME ZONE in MSSQL metric queries unless the SQL FUNCTIONS section explicitly shows they are supported by the target engine.
-- For month trend metrics, prefer EXTRACT(YEAR FROM <timestamp_expression>) and EXTRACT(MONTH FROM <timestamp_expression>) as separate grouped columns.
+- For month trend metrics, prefer DATEPART(YEAR, <timestamp_expression>) and DATEPART(MONTH, <timestamp_expression>) as separate grouped columns.
 """
 
     return instructions
@@ -2242,27 +2123,6 @@ _SCHEMA_IDENTIFIER_PATTERN = (
 _SCHEMA_TABLE_REFERENCE_PATTERN = (
     rf"{_SCHEMA_IDENTIFIER_PATTERN}(?:\s*\.\s*{_SCHEMA_IDENTIFIER_PATTERN})*"
 )
-_SEMANTIC_TABLE_NAME_KEYS = (
-    "name",
-    "referenceName",
-    "sourceTableName",
-    "tableName",
-    "table",
-)
-_SEMANTIC_COLUMN_CONTAINER_KEYS = (
-    "columns",
-    "fields",
-    "calculatedFields",
-    "dimensions",
-    "measures",
-)
-_SEMANTIC_COLUMN_NAME_KEYS = (
-    "name",
-    "referenceName",
-    "sourceColumnName",
-    "columnName",
-    "fieldName",
-)
 
 
 def construct_instructions(
@@ -2277,108 +2137,12 @@ def construct_instructions(
     return _instructions
 
 
-def _parse_semantic_metadata_content(content: str) -> Any | None:
-    content = content.strip()
-    if not content:
-        return None
-
-    if content.startswith("```"):
-        content = re.sub(r"^```(?:json|mdl)?\s*", "", content, flags=re.IGNORECASE)
-        content = re.sub(r"\s*```$", "", content)
-
-    candidates = [content]
-    object_start = content.find("{")
-    object_end = content.rfind("}")
-    if object_start >= 0 and object_end > object_start:
-        candidates.append(content[object_start : object_end + 1])
-    array_start = content.find("[")
-    array_end = content.rfind("]")
-    if array_start >= 0 and array_end > array_start:
-        candidates.append(content[array_start : array_end + 1])
-
-    for candidate in candidates:
-        try:
-            return orjson.loads(candidate)
-        except orjson.JSONDecodeError:
-            continue
-
-    return None
-
-
-def _semantic_name_values(metadata: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
-    values = []
-    for key in keys:
-        value = metadata.get(key)
-        if isinstance(value, str) and value.strip():
-            values.append(value.strip())
-    return values
-
-
-def _semantic_column_names(metadata: Any) -> set[str]:
-    columns: set[str] = set()
-    if isinstance(metadata, dict):
-        for column_name in _semantic_name_values(metadata, _SEMANTIC_COLUMN_NAME_KEYS):
-            columns.add(column_name)
-        for key in _SEMANTIC_COLUMN_CONTAINER_KEYS:
-            value = metadata.get(key)
-            if value is not None:
-                columns.update(_semantic_column_names(value))
-    elif isinstance(metadata, list):
-        for item in metadata:
-            columns.update(_semantic_column_names(item))
-
-    return columns
-
-
-def _construct_semantic_table_columns(content: str) -> dict[str, set[str]]:
-    parsed_content = _parse_semantic_metadata_content(content)
-    if parsed_content is None:
-        return {}
-
-    table_columns: dict[str, set[str]] = {}
-
-    def collect(metadata: Any) -> None:
-        if isinstance(metadata, list):
-            for item in metadata:
-                collect(item)
-            return
-
-        if not isinstance(metadata, dict):
-            return
-
-        column_containers = [
-            metadata.get(key)
-            for key in _SEMANTIC_COLUMN_CONTAINER_KEYS
-            if metadata.get(key) is not None
-        ]
-        if column_containers:
-            columns = set()
-            for container in column_containers:
-                columns.update(_semantic_column_names(container))
-
-            if columns:
-                for table_reference in _semantic_name_values(
-                    metadata, _SEMANTIC_TABLE_NAME_KEYS
-                ):
-                    for table_name in _table_reference_suffixes(table_reference):
-                        table_columns.setdefault(table_name, set()).update(columns)
-
-        for value in metadata.values():
-            collect(value)
-
-    collect(parsed_content)
-    return table_columns
-
-
 def construct_valid_table_names(documents: list[Any] | None = None) -> list[str]:
     table_names: set[str] = set()
     for document in documents or []:
         content = getattr(document, "content", document)
         if not isinstance(content, str):
             continue
-
-        for table_name in _construct_semantic_table_columns(content):
-            table_names.add(table_name)
 
         for match in re.finditer(
             rf"\bCREATE\s+TABLE\s+(?P<table>{_SCHEMA_TABLE_REFERENCE_PATTERN})",
@@ -2403,11 +2167,6 @@ def construct_valid_table_columns(
         content = getattr(document, "content", document)
         if not isinstance(content, str):
             continue
-
-        for table_name, columns in _construct_semantic_table_columns(
-            content
-        ).items():
-            table_columns.setdefault(table_name, set()).update(columns)
 
         for table_match in re.finditer(
             rf"\bCREATE\s+TABLE\s+(?P<table>{_SCHEMA_TABLE_REFERENCE_PATTERN})\s*\(",
@@ -2858,39 +2617,6 @@ def find_invalid_column_references(
         }
         if column.lower() not in valid_columns:
             invalid_references.append(f"{qualifier}.{column}")
-
-    referenced_tables = {
-        aliases.get(table_reference.lower())
-        for table_reference in extract_sql_table_references(sql)
-    }
-    referenced_tables = {table for table in referenced_tables if table}
-    if len(referenced_tables) == 1:
-        table_name = next(iter(referenced_tables))
-        valid_columns = {
-            str(col).lower()
-            for col in valid_table_columns.get(table_name, [])
-            if col is not None
-        }
-        valid_compact_columns = {
-            _compact_sql_identifier(col)
-            for col in valid_table_columns.get(table_name, [])
-            if col is not None
-        }
-        for start, end in _find_select_list_spans(sql):
-            for item in _split_top_level_select_items(sql[start:end]):
-                expression = _strip_projection_alias(
-                    re.sub(r"^\s*DISTINCT\s+", "", item, flags=re.IGNORECASE)
-                )
-                if not re.fullmatch(_SQL_IDENTIFIER_PATTERN, expression.strip()):
-                    continue
-                column = _normalize_sql_identifier(expression)
-                if column == "*":
-                    continue
-                if (
-                    column.lower() not in valid_columns
-                    and _compact_sql_identifier(column) not in valid_compact_columns
-                ):
-                    invalid_references.append(column)
 
     return sorted(set(invalid_references))
 
