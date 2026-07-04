@@ -75,6 +75,7 @@ export class DeployService implements IDeployService {
 
   public async deploy(manifest, projectId, force = false) {
     const eventName = TelemetryEvent.MODELING_DEPLOY_MDL;
+    let deploy: Deploy | null = null;
     try {
       // generate hash of manifest
       const hash = this.createMDLHash(manifest, projectId);
@@ -95,7 +96,7 @@ export class DeployService implements IDeployService {
         projectId,
         status: DeployStatusEnum.IN_PROGRESS,
       } as Deploy;
-      const deploy = await this.deployLogRepository.createOne(deployData);
+      deploy = await this.deployLogRepository.createOne(deployData);
 
       // deploy to AI-service
       const { status: aiStatus, error: aiError } =
@@ -129,6 +130,18 @@ export class DeployService implements IDeployService {
       return { status, error: aiError };
     } catch (err: any) {
       logger.error(`Error deploying model: ${err.message}`);
+      if (deploy?.id) {
+        try {
+          await this.deployLogRepository.updateOne(deploy.id, {
+            status: DeployStatusEnum.FAILED,
+            error: err.message,
+          });
+        } catch (updateErr: any) {
+          logger.error(
+            `Error updating failed deploy status: ${updateErr.message}`,
+          );
+        }
+      }
       this.telemetry.sendEvent(
         eventName,
         { mdl: manifest, error: err.message },
