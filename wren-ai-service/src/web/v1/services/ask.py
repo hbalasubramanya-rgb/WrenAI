@@ -3389,16 +3389,11 @@ class AskService:
             return results
 
         logger.info(f"Ask pipeline started for query_id: {query_id}")
-        histories = ask_request.histories[: self._max_histories][
-            ::-1
-        ]  # reverse the order of histories
-        if histories and not self._should_use_histories_for_query(user_query):
-            logger.info(
-                "Ignoring thread histories for independent question. query_id=%s query=%s",
-                query_id,
-                user_query,
-            )
-            histories = []
+        # Always answer from the active datasource schema and current question.
+        # Prior thread context, saved SQL examples, and historical questions are
+        # intentionally not reused here to prevent stale or cross-datasource
+        # leakage from influencing a fresh answer.
+        histories: list[AskHistory] = []
         rephrased_question = None
         intent_reasoning = None
         sql_generation_reasoning = None
@@ -3668,77 +3663,21 @@ class AskService:
                         query_id,
                     )
 
-                historical_question_result = []
                 if not api_results:
-                    historical_question = await self._run_with_timeout(
-                        "Historical question retrieval",
-                        self._pipelines["historical_question"].run(
+                    original_user_query = user_query
+                    # Only user instructions are kept. Prior SQL samples are not
+                    # reused for fresh questions because they can bias the model
+                    # toward stale or unrelated queries.
+                    instructions_task = await self._run_with_timeout(
+                        "Instruction retrieval",
+                        self._pipelines["instructions_retrieval"].run(
                             query=user_query,
                             project_id=ask_request.project_id,
+                            scope="sql",
                         ),
                     )
 
-                    # we only return top 1 result
-                    historical_question_result = historical_question.get(
-                        "formatted_output", {}
-                    ).get("documents", [])[:1]
-
-                valid_historical_results = []
-                for result in historical_question_result:
-                    historical_question_text = result.get("question")
-                    if not self._is_reusable_historical_question(
-                        user_query, historical_question_text
-                    ):
-                        logger.info(
-                            "Ignoring historical SQL for materially different question. query_id=%s query=%s historical_question=%s",
-                            query_id,
-                            user_query,
-                            historical_question_text,
-                        )
-                        continue
-
-                    sql_statement = result.get("statement")
-                    if not self._is_valid_select_sql(sql_statement):
-                        logger.warning(
-                            "Ignoring historical question without valid SQL for query_id %s",
-                            query_id,
-                        )
-                        continue
-                    valid_historical_results.append(
-                        AskResult(
-                            **{
-                                "sql": sql_statement.strip(),
-                                "type": "view" if result.get("viewId") else "llm",
-                                "viewId": result.get("viewId"),
-                            }
-                        )
-                    )
-
-                if valid_historical_results:
-                    api_results = valid_historical_results
-                    sql_generation_reasoning = ""
-                elif not api_results:
-                    original_user_query = user_query
-                    # Run both pipeline operations concurrently
-                    sql_samples_task, instructions_task = await self._run_with_timeout(
-                        "SQL pair and instruction retrieval",
-                        asyncio.gather(
-                            self._pipelines["sql_pairs_retrieval"].run(
-                                query=user_query,
-                                project_id=ask_request.project_id,
-                            ),
-                            self._pipelines["instructions_retrieval"].run(
-                                query=user_query,
-                                project_id=ask_request.project_id,
-                                scope="sql",
-                            ),
-                        ),
-                    )
-
-                    # Extract results from completed tasks
-                    sql_samples = sql_samples_task["formatted_output"].get(
-                        "documents", []
-                    )
+                    sql_samples = []
                     instructions = instructions_task["formatted_output"].get(
                         "documents", []
                     )

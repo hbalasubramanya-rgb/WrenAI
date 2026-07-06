@@ -10,7 +10,6 @@ import {
   MAX_WAIT_TIME,
   isAskResultFinished,
   validateSummaryResult,
-  transformHistoryInput,
 } from '@/apollo/server/utils/apiUtils';
 import {
   AskResult,
@@ -30,7 +29,6 @@ const EMPTY_RESULT_SUMMARY =
   'The SQL query ran successfully, but it returned no rows for the current filters and datasource. Review the SQL or broaden the question if you expected matching records.';
 
 const {
-  apiHistoryRepository,
   projectService,
   deployService,
   wrenAIAdaptor,
@@ -78,16 +76,11 @@ export default async function handler(
     // Create a new thread if it's a new question
     const newThreadId = threadId || uuidv4();
 
-    // Get conversation history if threadId is provided
-    const histories = threadId
-      ? await apiHistoryRepository.findAllBy({ threadId })
-      : undefined;
-
     // Step 1: Generate SQL
     const askTask = await wrenAIAdaptor.ask({
       query: question,
       deployId: lastDeploy.hash,
-      histories: transformHistoryInput(histories) as any,
+      histories: undefined,
       configurations: {
         language:
           language || WrenAILanguage[project.language] || WrenAILanguage.EN,
