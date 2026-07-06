@@ -124,12 +124,40 @@ const normalizeSqlIdentifier = (identifier: string) => {
   return trimmed;
 };
 
-const splitTableReference = (tableReference: string) =>
-  tableReference
-    .trim()
+const splitTableReference = (tableReference: string) => {
+  const trimmed = tableReference.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const isMultipartQuotedReference =
+    /"\s*\.\s*"|\]\s*\.\s*\[|`\s*\.\s*`/.test(trimmed);
+  if (
+    !isMultipartQuotedReference &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith('`') && trimmed.endsWith('`')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']')))
+  ) {
+    const normalized = normalizeSqlIdentifier(trimmed);
+    if (normalized.includes('.')) {
+      return normalized.split(/\s*\.\s*/).filter(Boolean);
+    }
+  }
+
+  return trimmed
     .split(/\s*\.\s*/)
     .map(normalizeSqlIdentifier)
     .filter(Boolean);
+};
+
+const quoteSqlIdentifier = (identifier: string) =>
+  `"${identifier.replace(/"/g, '""')}"`;
+
+const quoteTableReference = (tableReference: string) =>
+  splitTableReference(tableReference).map(quoteSqlIdentifier).join('.');
+
+const escapeRegExp = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const extractSqlTableReferences = (sql: string) => {
   const references: string[] = [];
@@ -277,6 +305,98 @@ const getManifestColumnsByQueryableName = (manifest?: Manifest) => {
   return columnsByName;
 };
 
+const addModelReferenceAlias = (
+  aliases: Map<string, string>,
+  parts: Array<string | null | undefined>,
+  modelName?: string,
+) => {
+  if (!modelName) {
+    return;
+  }
+
+  const normalizedParts = parts
+    .filter((part): part is string => Boolean(part))
+    .map((part) => part.toLowerCase());
+  if (!normalizedParts.length) {
+    return;
+  }
+
+  for (let index = 0; index < normalizedParts.length; index += 1) {
+    aliases.set(normalizedParts.slice(index).join('.'), modelName);
+  }
+};
+
+const getManifestTableReferenceAliases = (manifest?: Manifest) => {
+  const aliases = new Map<string, string>();
+  for (const model of manifest?.models || []) {
+    if (!model.name) {
+      continue;
+    }
+
+    aliases.set(model.name.toLowerCase(), model.name);
+    if (model.tableReference?.table) {
+      addModelReferenceAlias(
+        aliases,
+        [
+          model.tableReference.catalog,
+          model.tableReference.schema,
+          model.tableReference.table,
+        ],
+        model.name,
+      );
+    }
+  }
+  return aliases;
+};
+
+const tableReferencePatternFor = (tableReference: string) => {
+  const parts = splitTableReference(tableReference);
+  if (!parts.length) {
+    return undefined;
+  }
+
+  const multipartQuoted = parts
+    .map(quoteSqlIdentifier)
+    .map(escapeRegExp)
+    .join(String.raw`\s*\.\s*`);
+  const bare = parts.map(escapeRegExp).join(String.raw`\s*\.\s*`);
+  const singleQuoted = escapeRegExp(quoteSqlIdentifier(tableReference));
+  const bracketed = escapeRegExp(`[${tableReference}]`);
+  const backticked = escapeRegExp(`\`${tableReference}\``);
+  return new RegExp(
+    String.raw`(?<![A-Za-z0-9_$])(?:${multipartQuoted}|${singleQuoted}|${bracketed}|${backticked}|${bare})(?![A-Za-z0-9_$])`,
+    'gi',
+  );
+};
+
+const normalizeSqlReferencesToManifest = (sql: string, manifest?: Manifest) => {
+  const aliases = getManifestTableReferenceAliases(manifest);
+  if (!aliases.size) {
+    return sql;
+  }
+
+  let normalizedSql = sql;
+  const replacements = new Map<string, string>();
+  for (const reference of extractSqlTableReferences(sql)) {
+    const canonicalName = aliases.get(reference.toLowerCase());
+    if (canonicalName && canonicalName.toLowerCase() !== reference.toLowerCase()) {
+      replacements.set(reference, canonicalName);
+    }
+  }
+
+  for (const [reference, canonicalName] of [...replacements.entries()].sort(
+    ([left], [right]) => right.length - left.length,
+  )) {
+    const pattern = tableReferencePatternFor(reference);
+    if (!pattern) {
+      continue;
+    }
+    normalizedSql = normalizedSql.replace(pattern, quoteTableReference(canonicalName));
+  }
+
+  return normalizedSql;
+};
+
 const validateSqlReferencesManifest = (sql: string, manifest?: Manifest) => {
   const validNames = getManifestQueryableNames(manifest);
   if (!validNames.size) {
@@ -381,28 +501,33 @@ export class QueryService implements IQueryService {
       cacheEnabled,
     } = options;
     const { type: dataSource, connectionInfo } = project;
-    validateSqlReferencesManifest(sql, mdl);
+    const normalizedSql = normalizeSqlReferencesToManifest(sql, mdl);
+    validateSqlReferencesManifest(normalizedSql, mdl);
     if (this.useEngine(dataSource)) {
       if (dryRun) {
         logger.debug('Using wren engine to dry run');
-        await this.wrenEngineAdaptor.dryRun(sql, {
+        await this.wrenEngineAdaptor.dryRun(normalizedSql, {
           manifest: mdl,
           limit,
         });
         return true;
       } else {
         logger.debug('Using wren engine to preview');
-        const data = await this.wrenEngineAdaptor.previewData(sql, mdl, limit);
+        const data = await this.wrenEngineAdaptor.previewData(
+          normalizedSql,
+          mdl,
+          limit,
+        );
         return data as PreviewDataResponse;
       }
     } else {
       this.checkDataSourceIsSupported(dataSource);
       logger.debug('Use ibis adaptor to preview');
       if (dryRun) {
-        return await this.ibisDryRun(sql, dataSource, connectionInfo, mdl);
+        return await this.ibisDryRun(normalizedSql, dataSource, connectionInfo, mdl);
       } else {
         return await this.ibisQuery(
-          sql,
+          normalizedSql,
           dataSource,
           connectionInfo,
           mdl,
