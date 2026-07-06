@@ -2384,6 +2384,11 @@ _SEMANTIC_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "period": ("timeid", "TimeID", "TimeId", "YearInd", "Year", "Date"),
     "periodid": ("timeid", "TimeID", "TimeId"),
     "timeid": ("timeid", "TimeID", "TimeId"),
+    "customer": ("account", "Customer", "CustName", "CustNo", "customerpo"),
+    "customers": ("account", "Customer", "CustName", "CustNo", "customerpo"),
+    "customername": ("account", "Customer", "CustName", "CustNo", "customerpo"),
+    "customerid": ("account", "Customer", "CustNo", "customerpo"),
+    "customeraccount": ("account", "Customer", "CustName", "CustNo"),
     "customerregion": ("Country", "Market", "Region", "CustomerRegion"),
     "fixlogid": ("DebugEntryId", "FixId", "RepairItem", "id"),
 }
