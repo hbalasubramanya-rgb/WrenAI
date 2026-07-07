@@ -1508,6 +1508,10 @@ class AskService:
                 continue
             if "sales" in table_name:
                 score += 5
+            if "order" in table_name:
+                score += 4
+            if "invoice" in table_name or "inv" in table_name:
+                score += 3
             if "stage" in table_name:
                 score -= 8
 
@@ -1555,6 +1559,16 @@ class AskService:
         if contribution_sql := self._build_contribution_sql(query, tables):
             return contribution_sql
 
+        wants_count_metric = any(
+            term in normalized_query for term in ("count", "counts", "volume", "how many")
+        ) and not any(
+            term in normalized_query
+            for term in ("revenue", "sales value", "amount", "value", "quantity", "qty")
+        )
+        wants_average_metric = any(
+            term in normalized_query for term in ("average", "avg", "mean")
+        )
+
         wants_monthly_count = (
             "monthly" in normalized_query
             and any(term in normalized_query for term in ("count", "volume"))
@@ -1601,25 +1615,34 @@ class AskService:
                     date_ref = (
                         f"{table_ref}.{self._quote_sql_identifier(date_column)}"
                     )
+                    year_expr = f"EXTRACT(YEAR FROM {date_ref})"
+                    month_expr = f"EXTRACT(MONTH FROM {date_ref})"
                     return (
-                        f"SELECT DATEPART(YEAR, {date_ref}) AS \"year\", "
-                        f"DATEPART(MONTH, {date_ref}) AS \"month\", "
+                        f"SELECT {year_expr} AS \"year\", "
+                        f"{month_expr} AS \"month\", "
                         f'COUNT(*) AS "OrderCount" '
                         f"FROM {table_ref}"
                         f"{self._build_date_filter(table_name, date_column, query)} "
-                        f"GROUP BY DATEPART(YEAR, {date_ref}), "
-                        f"DATEPART(MONTH, {date_ref}) "
-                        f"ORDER BY DATEPART(YEAR, {date_ref}), "
-                        f"DATEPART(MONTH, {date_ref})"
+                        f"GROUP BY {year_expr}, {month_expr} "
+                        f"ORDER BY {year_expr}, {month_expr}"
                     )
 
         dimension_candidates: list[tuple[str, ...]] = []
         if "salesperson" in normalized_query or "sales person" in normalized_query:
-            dimension_candidates.append(("SalesPerson", "Sales Rep", "SalesRep"))
+            dimension_candidates.append(
+                (
+                    "SalesPerson",
+                    "Salesman",
+                    "SalesRep",
+                    "Sales Rep",
+                    "Rep",
+                    "Owner",
+                )
+            )
         if "business unit" in normalized_query or "bu" in normalized_query:
             dimension_candidates.append(("BusinessUnit", "Business Unit", "BU"))
-        if "market" in normalized_query:
-            dimension_candidates.append(("Market", "MarketType"))
+        if "market" in normalized_query or "region" in normalized_query:
+            dimension_candidates.append(("Market", "MarketType", "Region", "Area"))
         if "division" in normalized_query:
             dimension_candidates.append(("Division",))
         if (
@@ -1631,40 +1654,87 @@ class AskService:
             dimension_candidates.append(("ProdType", "ProductType", "Product Type"))
         elif "product" in normalized_query:
             dimension_candidates.append(
-                ("ProdName", "Product", "ProductName", "Item", "ProdCode")
+                (
+                    "ProdName",
+                    "Product",
+                    "ProductName",
+                    "ProductDescription",
+                    "Item",
+                    "ItemName",
+                    "ProdCode",
+                    "ProductCode",
+                    "PartNo",
+                    "SKU",
+                )
             )
         if "customer" in normalized_query:
-            dimension_candidates.append(("Customer", "CustName", "CustNo"))
-
-        if not dimension_candidates:
-            return None
+            dimension_candidates.append(
+                (
+                    "Customer",
+                    "CustomerName",
+                    "CustName",
+                    "CustNo",
+                    "CustomerNo",
+                    "CustomerCode",
+                    "Account",
+                    "AccountName",
+                    "Client",
+                    "ClientName",
+                )
+            )
 
         measure_candidates = (
-            "NewOrderValue",
-            "NewOrdersValue",
-            "InvoiceValue",
-            "InvoiceAmount",
-            "OrderValue",
+            "Qty",
+            "Quantity",
+            "SalesQty",
+            "OrderQty",
+            "InvoiceQty",
+        ) if any(term in normalized_query for term in ("quantity", "qty")) else (
             "SalesValue",
             "FXSalesValue",
             "Revenue",
+            "NetSales",
+            "SalesAmount",
+            "InvoiceValue",
+            "InvoiceAmount",
+            "InvoiceAmt",
             "Amount",
+            "OrderValue",
+            "NewOrderValue",
+            "NewOrdersValue",
             "Value",
             "Cost",
-            "Qty",
-            "Quantity",
         )
         if "invoice" in normalized_query:
             measure_candidates = (
                 "InvoiceValue",
                 "InvoiceAmount",
+                "InvoiceAmt",
+                "InvValue",
+                "InvAmount",
                 "SalesValue",
                 "FXSalesValue",
                 "Value",
                 "Amount",
             )
-        wants_trend = "trend" in normalized_query or "line chart" in normalized_query
+        if wants_count_metric:
+            measure_candidates = ()
+
+        wants_trend = (
+            "trend" in normalized_query
+            or "line chart" in normalized_query
+            or "over time" in normalized_query
+            or "by month" in normalized_query
+            or "monthly" in normalized_query
+        )
         wants_top = bool(re.search(r"\btop\s+\d+\b", normalized_query))
+        wants_top = wants_top or any(
+            term in normalized_query
+            for term in ("top ", "highest", "largest", "most ", "best ")
+        )
+        wants_time_bucket = wants_trend or bool(
+            re.search(r"\bby\s+(?:month|year|quarter|date)\b", normalized_query)
+        )
         wants_detail_rows = (
             wants_top
             and ("new order" in normalized_query or "orders" in normalized_query)
@@ -1673,6 +1743,49 @@ class AskService:
         wants_date = wants_trend or "this year" in normalized_query or bool(
             re.search(r"\b20\d{2}\b", normalized_query)
         )
+
+        if not dimension_candidates and wants_time_bucket:
+            selected = self._select_best_analytics_table(
+                tables,
+                [],
+                measure_candidates,
+                wants_date=True,
+            )
+            if not selected:
+                return None
+
+            table, _dimensions, measure, date_column = selected
+            table_name = table.get("name")
+            if not (table_name and date_column):
+                return None
+
+            table_name = str(table_name)
+            table_ref = self._quote_sql_identifier(table_name)
+            date_ref = f"{table_ref}.{self._quote_sql_identifier(date_column)}"
+            year_expr = f"EXTRACT(YEAR FROM {date_ref})"
+            month_expr = f"EXTRACT(MONTH FROM {date_ref})"
+            if wants_count_metric or not measure:
+                metric_expr = "COUNT(*)"
+                metric_alias = "RecordCount"
+            elif wants_average_metric:
+                metric_expr = f"AVG({table_ref}.{self._quote_sql_identifier(measure)})"
+                metric_alias = f"Average{measure}"
+            else:
+                metric_expr = f"SUM({table_ref}.{self._quote_sql_identifier(measure)})"
+                metric_alias = f"Total{measure}"
+
+            return (
+                f"SELECT {year_expr} AS \"year\", "
+                f"{month_expr} AS \"month\", "
+                f"{metric_expr} AS {self._quote_sql_identifier(metric_alias)} "
+                f"FROM {table_ref}"
+                f"{self._build_date_filter(table_name, date_column, query)} "
+                f"GROUP BY {year_expr}, {month_expr} "
+                f"ORDER BY {year_expr}, {month_expr}"
+            )
+
+        if not dimension_candidates:
+            return None
 
         selected = self._select_best_analytics_table(
             tables,
@@ -1720,15 +1833,20 @@ class AskService:
 
         if wants_trend and date_column:
             date_ref = f"{table_ref}.{self._quote_sql_identifier(date_column)}"
-            metric_expr = (
-                f"SUM({table_ref}.{self._quote_sql_identifier(measure)})"
-                if measure
-                else "COUNT(*)"
-            )
-            metric_alias = f"Total{measure}" if measure else "OrderCount"
+            year_expr = f"EXTRACT(YEAR FROM {date_ref})"
+            month_expr = f"EXTRACT(MONTH FROM {date_ref})"
+            if wants_count_metric or not measure:
+                metric_expr = "COUNT(*)"
+                metric_alias = "RecordCount"
+            elif wants_average_metric:
+                metric_expr = f"AVG({table_ref}.{self._quote_sql_identifier(measure)})"
+                metric_alias = f"Average{measure}"
+            else:
+                metric_expr = f"SUM({table_ref}.{self._quote_sql_identifier(measure)})"
+                metric_alias = f"Total{measure}"
             select_parts = [
-                f"DATEPART(YEAR, {date_ref}) AS \"year\"",
-                f"DATEPART(MONTH, {date_ref}) AS \"month\"",
+                f"{year_expr} AS \"year\"",
+                f"{month_expr} AS \"month\"",
                 *[
                     f"{dimension_ref} AS {self._quote_sql_identifier(dimensions[index])}"
                     for index, dimension_ref in enumerate(dimension_refs)
@@ -1736,24 +1854,26 @@ class AskService:
                 f"{metric_expr} AS {self._quote_sql_identifier(metric_alias)}",
             ]
             group_parts = [
-                f"DATEPART(YEAR, {date_ref})",
-                f"DATEPART(MONTH, {date_ref})",
+                year_expr,
+                month_expr,
                 *dimension_refs,
             ]
             return (
                 f"SELECT {', '.join(select_parts)} FROM {table_ref}"
                 f"{self._build_date_filter(table_name, date_column, query)} "
                 f"GROUP BY {', '.join(group_parts)} "
-                f"ORDER BY DATEPART(YEAR, {date_ref}), "
-                f"DATEPART(MONTH, {date_ref})"
+                f"ORDER BY {year_expr}, {month_expr}"
             )
 
-        metric_expr = (
-            f"SUM({table_ref}.{self._quote_sql_identifier(measure)})"
-            if measure
-            else "COUNT(*)"
-        )
-        metric_alias = f"Total{measure}" if measure else "OrderCount"
+        if wants_count_metric or not measure:
+            metric_expr = "COUNT(*)"
+            metric_alias = "RecordCount"
+        elif wants_average_metric:
+            metric_expr = f"AVG({table_ref}.{self._quote_sql_identifier(measure)})"
+            metric_alias = f"Average{measure}"
+        else:
+            metric_expr = f"SUM({table_ref}.{self._quote_sql_identifier(measure)})"
+            metric_alias = f"Total{measure}"
         limit_match = re.search(r"\btop\s+(\d+)\b", normalized_query)
         limit = int(limit_match.group(1)) if limit_match else 10
         top_clause = f"TOP {limit} " if wants_top else ""
@@ -3126,8 +3246,6 @@ class AskService:
     def _build_schema_grounded_sales_sql(
         self, query: str, table_ddls: list[str]
     ) -> str | None:
-        return None
-
         normalized_query = re.sub(r"\s+", " ", (query or "").strip().lower())
         normalized_schema = "\n".join(
             ddl for ddl in table_ddls or [] if isinstance(ddl, str)
@@ -3135,44 +3253,30 @@ class AskService:
         if not normalized_query or not normalized_schema:
             return None
 
-        asks_for_salesperson_performance = (
-            any(
-                term in normalized_query
-                for term in (
-                    "salesperson performance",
-                    "sales person performance",
-                    "sales rep performance",
-                    "salesperson ranking",
-                    "sales person ranking",
-                    "sales rep ranking",
-                )
+        if not any(
+            term in normalized_query
+            for term in (
+                "amount",
+                "average order value",
+                "customer",
+                "invoice",
+                "order",
+                "orders",
+                "product",
+                "quantity",
+                "qty",
+                "revenue",
+                "sale",
+                "sales",
+                "salesperson",
+                "sales person",
+                "trend",
+                "value",
             )
-            or (
-                "salesperson" in normalized_query
-                and any(term in normalized_query for term in ("performance", "ranking"))
-            )
-        )
-        if not asks_for_salesperson_performance:
-            return self._build_schema_grounded_analytics_sql(query, table_ddls)
-
-        required_schema_terms = (
-            "create table dbo_tblsales",
-            "salesperson",
-            "salesvalue",
-        )
-        if not all(term in normalized_schema for term in required_schema_terms):
+        ):
             return None
 
-        limit = 20 if re.search(r"\btop\s+20\b", normalized_query) else 10
-        return (
-            f'SELECT TOP {limit} '
-            f'"dbo_tblSales"."SalesPerson" AS "SalesPerson", '
-            f'SUM("dbo_tblSales"."SalesValue") AS "TotalSalesValue" '
-            f'FROM "dbo_tblSales" '
-            f'WHERE "dbo_tblSales"."SalesPerson" IS NOT NULL '
-            f'GROUP BY "dbo_tblSales"."SalesPerson" '
-            f'ORDER BY SUM("dbo_tblSales"."SalesValue") DESC'
-        )
+        return self._build_schema_grounded_analytics_sql(query, table_ddls)
 
     async def _run_with_timeout(
         self,
