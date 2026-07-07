@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import sys
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from hamilton import base
 from hamilton.async_driver import AsyncDriver
@@ -17,13 +19,20 @@ from src.pipelines.generation.utils.sql import (
 )
 from src.utils import trace_cost
 from src.web.v1.services import Configuration
-from src.web.v1.services.ask import AskHistory
+
+if TYPE_CHECKING:
+    from src.web.v1.services.ask import AskHistory
+else:
+    AskHistory = Any
 
 logger = logging.getLogger("wren-ai-service")
 
 
 sql_generation_reasoning_user_prompt_template = """
-### DATABASE SCHEMA ###
+### ACTIVE DATASOURCE METADATA ###
+This is the complete deployed metadata for the active datasource, including schema,
+tables, columns, metrics, views, and relationships. Use only this metadata when
+planning SQL.
 {% for document in documents %}
     {{ document }}
 {% endfor %}

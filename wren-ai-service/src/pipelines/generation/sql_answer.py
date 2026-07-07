@@ -39,6 +39,16 @@ Please provide your response in proper Markdown stringformat.
 """
 
 sql_to_answer_user_prompt_template = """
+{% if documents %}
+### Active Datasource Metadata ###
+This is the complete deployed metadata for the active datasource. Use it to
+understand the schema, tables, columns, metrics, views, and relationships behind
+the SQL before answering.
+{% for document in documents %}
+    {{ document }}
+{% endfor %}
+{% endif %}
+
 ### Inputs ###
 User's question: {{ query }}
 SQL: {{ sql }}
@@ -64,6 +74,7 @@ def prompt(
     current_time: str,
     custom_instruction: str,
     prompt_builder: PromptBuilder,
+    documents: list[str] | None = None,
 ) -> dict:
     _prompt = prompt_builder.run(
         query=query,
@@ -72,6 +83,7 @@ def prompt(
         language=language,
         current_time=current_time,
         custom_instruction=custom_instruction,
+        documents=documents or [],
     )
     return {"prompt": clean_up_new_lines(_prompt.get("prompt"))}
 
@@ -156,6 +168,7 @@ class SQLAnswer(BasicPipeline):
         current_time: str = Configuration().show_current_time(),
         query_id: Optional[str] = None,
         custom_instruction: Optional[str] = None,
+        contexts: Optional[list[str]] = None,
     ) -> dict:
         logger.debug("Sql_Answer Generation pipeline is running...")
         return await self._pipe.execute(
@@ -168,6 +181,7 @@ class SQLAnswer(BasicPipeline):
                 "current_time": current_time,
                 "query_id": query_id,
                 "custom_instruction": custom_instruction or "",
+                "documents": contexts or [],
                 **self._components,
             },
         )

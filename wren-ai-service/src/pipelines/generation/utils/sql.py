@@ -1335,13 +1335,7 @@ def _rewrite_mssql_temporal_bucket_alias_references(sql: str) -> str:
 
 
 def _references_known_hallucination_prone_schema(sql: str) -> bool:
-    return bool(
-        re.search(
-            r"\b(?:dbo_repair_logs|dbo_DebugEntries|dbo_reports|dbo_knowledge_articles|dbo_kb_articles)\b",
-            sql,
-            flags=re.IGNORECASE,
-        )
-    )
+    return False
 
 
 def _rewrite_known_schema_hallucinations(sql: str, now: datetime) -> str:
@@ -1349,11 +1343,6 @@ def _rewrite_known_schema_hallucinations(sql: str, now: datetime) -> str:
     normalized = _rewrite_mssql_to_date_buckets(normalized)
     normalized = _rewrite_mssql_aggregate_qualified_temporal_columns(normalized)
     normalized = _rewrite_mssql_invented_date_identifiers(normalized)
-    normalized = _rewrite_mssql_invented_repair_relationship_identifiers(normalized)
-    normalized = _rewrite_mssql_repair_log_turnaround_trend_shape(normalized)
-    normalized = _rewrite_mssql_repair_log_throughput_shape(normalized)
-    normalized = _rewrite_mssql_invented_pcb_throughput_identifiers(normalized)
-    normalized = _rewrite_mssql_invented_failure_category(normalized)
     normalized = _rewrite_mssql_invented_report_fields(normalized)
     normalized = _rewrite_mssql_invented_ticket_metrics(normalized)
     normalized = _rewrite_mssql_invented_knowledge_article_fields(normalized)
@@ -1412,19 +1401,8 @@ def normalize_generation_result_sql(sql: str, data_source: str | None = None) ->
         normalized = _rewrite_mssql_timestamp_subtraction(normalized)
         normalized = _rewrite_mssql_to_date_buckets(normalized)
         normalized = _rewrite_mssql_timestamp_casts(normalized)
-        normalized = _rewrite_mssql_sales_schema_aliases(normalized)
         normalized = _rewrite_mssql_aggregate_qualified_temporal_columns(normalized)
         normalized = _rewrite_mssql_invented_date_identifiers(normalized)
-        normalized = _rewrite_mssql_invented_repair_relationship_identifiers(
-            normalized
-        )
-        normalized = _rewrite_mssql_repair_log_turnaround_trend_shape(normalized)
-        normalized = _rewrite_mssql_repair_log_throughput_shape(normalized)
-        normalized = _rewrite_mssql_invented_pcb_throughput_identifiers(normalized)
-        normalized = _rewrite_mssql_invented_failure_category(normalized)
-        normalized = _rewrite_mssql_invented_report_fields(normalized)
-        normalized = _rewrite_mssql_invented_ticket_metrics(normalized)
-        normalized = _rewrite_mssql_invented_knowledge_article_fields(normalized)
         normalized = _rewrite_mssql_bare_time_bucket_identifiers(normalized)
         normalized = _rewrite_mssql_bucket_functions(normalized)
         normalized = _rewrite_temporal_bucket_functions(normalized)
@@ -1737,10 +1715,10 @@ _DEFAULT_TEXT_TO_SQL_RULES = """
 - DON'T USE "TO_CHAR" function in the generated SQL query.
 - Aggregate functions are not allowed in the WHERE clause. Instead, they belong in the HAVING clause, which is used to filter after aggregation.
 - You can only add "ORDER BY" and "LIMIT" to the final "UNION" result.
-- Never invent foreign key columns or relationship fields such as "FailurePatternID", "FailurePatternId", "TicketID", or "<Table>ID" unless that exact column appears in the DATABASE SCHEMA. Join only on explicit schema columns or explicit relationships.
+- Never invent foreign key columns or relationship fields from table names unless that exact column appears in the DATABASE SCHEMA. Join only on explicit schema columns or explicit relationships.
 - Never invent time bucket columns such as "MONTH", "YEAR", "DAY", "month", "year", or "date" unless that exact column appears in the DATABASE SCHEMA. For monthly, yearly, or daily trends, apply a supported date/time bucket function from SQL FUNCTIONS to a real timestamp column from the selected table.
-- For synced repair-log schemas, if "dbo_repair_logs" contains "created_at" and the user asks for monthly repair volume or repair trends, count repair rows and bucket "dbo_repair_logs"."created_at". Do not select, group by, or order by "dbo_repair_logs"."MONTH" or bare "MONTH" unless the schema explicitly contains that column.
-- For repair counts grouped by failure category in synced repair-log schemas, use "dbo_repair_logs"."failure_code" when that column appears in the schema. Do not invent "failure_category" unless it appears in the DATABASE SCHEMA.
+- For trend questions, choose an explicit timestamp/date column from the active schema and bucket it with supported SQL FUNCTIONS. Do not select, group by, or order by invented time bucket columns unless they explicitly appear in the schema.
+- For grouped count questions, choose an explicit dimension column from the active schema. Do not invent category/status/type columns unless they explicitly appear in the schema.
 - For top/bottom N questions, return exactly the business columns needed to answer the question. For example, "top 10 common failures" should return the failure field and the failure count.
 - For top/bottom N questions, prefer ORDER BY on the metric plus a row limit instead of adding ranking helper columns.
 - Do not include helper ranking columns such as "rank", "row_number", or "dense_rank" in the final SELECT unless the user explicitly asks to see ranks.
@@ -1754,22 +1732,10 @@ _MSSQL_TEXT_TO_SQL_RULES = """
 - DO NOT use PostgreSQL-style or Trino-style date syntax such as DATE_TRUNC, DATETRUNC, INTERVAL, CURRENT_DATE, TIMESTAMP WITH TIME ZONE, TO_CHAR, TO_UNIXTIME, TO_TIMESTAMP, TO_TIMESTAMP_MILLIS, TO_TIMESTAMP_SECONDS, TO_TIMESTAMP_MICROS, TO_TIMESTAMP_NANOS, or :: casts.
 - DO NOT use JSON extraction functions or operators such as JSON_VALUE, JSON_QUERY, JSON_EXTRACT, JSON_EXTRACT_SCALAR, JSON_EXTRACT_ARRAY, json_value, json_extract, ->, or ->>. The MSSQL Wren/Ibis runtime does not support them.
 - If a table has a generic JSON/text column such as "data", do not assume keys inside it are queryable. Only use fields that are exposed as first-class columns in the DATABASE SCHEMA.
-- If a requested metric such as debug hours, risk score, repair cost, or turnaround time is only present inside a JSON/text column and is not exposed as a first-class column or calculated field, do not generate SQL that extracts it from JSON.
-- Never invent JSON-derived columns such as "repair_date", "repair_status", or "failure_code" unless they are explicitly listed as columns in the DATABASE SCHEMA.
-- For repair trend or repair volume questions, prefer explicit timestamp columns such as "created_at", "updated_at", "opened_at", or "closed_at" only when those exact columns appear in the selected table schema.
-- For repair counts grouped by failure category, use explicit exposed fields such as "dbo_repair_logs"."failure_code" when present. Do not invent "dbo_repair_logs"."FailurePatternID"; only join to "dbo_failure_patterns" when an explicit join key or relationship exists in the DATABASE SCHEMA.
-- For PCB/debug-entry failure charts, do not join "dbo_DebugEntries"."DebugEntryId" to "dbo_failure_patterns"."id"; those fields have incompatible types. If both "dbo_DebugEntries"."FailureSys" and "dbo_failure_patterns"."id" exist, join "dbo_DebugEntries"."FailureSys" = "dbo_failure_patterns"."id".
-- For PCB synced database questions:
-    - Use "dbo_DebugEntries" for debug/PCB event records when the schema contains it.
-    - Use columns such as "Material", "WorkOrder", "SerialNumber", "FailedAt", "DateIn", "DateOut", "Hours", "Priority", "Actions", "Notes", and "FailureSys" only when they appear in the schema.
-    - Use "dbo_failure_patterns" for failure names, categories, severity, trend, occurrence counts, daily pattern summaries, and cost impact when those columns appear in the schema.
-    - For throughput trends across manufacturing/business units, use "dbo_DebugEntries"."BusinessUnit" as the unit dimension and a real debug-entry timestamp such as "dbo_DebugEntries"."DateIn" or "dbo_DebugEntries"."FailedAt" for the trend bucket. Do not use "dbo_repair_logs"."ManufacturingUnit", "dbo_repair_logs"."MONTH", or invented manufacturing/date fields.
-    - For top/common PCB failure questions, prefer grouping by "dbo_failure_patterns"."name" or "dbo_failure_patterns"."category" and counting "dbo_DebugEntries"."DebugEntryId" after joining "dbo_DebugEntries"."FailureSys" = "dbo_failure_patterns"."id".
-    - If a useful aggregate already exists in "dbo_failure_patterns" such as "occurrences", it can be used directly for top failure pattern questions without joining event rows.
-- For knowledge article tables:
-    - Use "created_at" for year/month trend buckets. Do not select, group by, or order by invented "YEAR" or "MONTH" columns.
-    - In "dbo_knowledge_articles", use "helpful" and "views" for effectiveness-style questions, and use "author" for creator/author groupings. Do not invent "effectiveness_score" or "created_by".
-    - In "dbo_kb_articles", use "created_by_user_id" for creator groupings. Do not invent "created_by" or "author" unless those exact columns appear in the schema.
+- If a requested metric is only present inside a JSON/text column and is not exposed as a first-class column or calculated field, do not generate SQL that extracts it from JSON.
+- Never invent JSON-derived columns unless they are explicitly listed as columns in the DATABASE SCHEMA.
+- For trend or volume questions, use explicit timestamp/date columns only when those exact columns appear in the selected table schema.
+- For grouped count questions, use explicit exposed dimension fields and only join tables when an explicit join key or relationship exists in the DATABASE SCHEMA.
 - DO NOT use DATEADD, DATEDIFF, DATETIME2, or DATETIMEOFFSET unless the SQL FUNCTIONS section explicitly proves they are supported by the target runtime.
 - Do not subtract timestamp/date columns directly. If a duration or turnaround column exists in the schema, select that column directly. If only start/end timestamps exist and the SQL FUNCTIONS section lists DATEDIFF, use DATEDIFF('second', <start_timestamp>, <end_timestamp>) for duration in seconds.
 - Resolve relative time phrases such as "last 12 months", "last month", or "this year" into absolute ISO timestamp boundaries using the current time context. Prefer closed-open literal ranges over runtime date arithmetic.
@@ -2118,12 +2084,12 @@ Given user's question, database schema, etc., you should think deeply and carefu
 3. YOU MUST REFER to the sql samples and learn the usage of the schema structures and how SQL is written based on them if the section of SQL SAMPLES is available in user's input.
 4. YOU MUST FOLLOW the reasoning plan step by step strictly to generate the SQL query if the section of REASONING PLAN is available in user's input.
 5. YOU MUST FOLLOW SQL Rules if they are not contradicted with instructions.
-6. YOU MUST ONLY use table names and column names that are explicitly present in the DATABASE SCHEMA or VALID TABLE NAMES sections.
-7. SQL SAMPLES are examples of style only. NEVER reuse a sample table or column name unless that exact table or column also appears in the active DATABASE SCHEMA or VALID TABLE NAMES sections.
-8. NEVER invent generic table names such as repair_logs, repair_log, sales_data, sales, orders, customers, users, tickets, events, or transactions unless that exact table name is present in the DATABASE SCHEMA or VALID TABLE NAMES sections.
-9. If the user asks about a business concept such as repairs, PCB, cost, turnaround time, volume, sales performance, salesperson ranking, customer growth, revenue, margin, orders, or invoices, map it to the closest explicit table and column names from the provided schema. Do not create a new table name from the business concept.
-10. Before applying SUM, AVG, MIN, MAX, or arithmetic to a column, verify that the chosen column is numeric in the DATABASE SCHEMA. Do not aggregate text/string columns as numeric values.
-11. Do not prefix table names with catalog or schema names unless the DATABASE SCHEMA or VALID TABLE NAMES section shows the table name with that exact prefix.
+6. YOU MUST ONLY use table names and column names that are explicitly present in the ACTIVE DATASOURCE METADATA, DATABASE SCHEMA, or VALID TABLE NAMES sections.
+7. SQL SAMPLES are examples of style only. NEVER reuse a sample table or column name unless that exact table or column also appears in the active metadata, DATABASE SCHEMA, or VALID TABLE NAMES sections.
+8. NEVER invent generic table names from the user's business terms unless that exact table name is present in the active metadata, DATABASE SCHEMA, or VALID TABLE NAMES sections.
+9. Map business concepts to the closest explicit tables, columns, metrics, views, and relationships from the active metadata. Do not create a new table or column name from the business concept.
+10. Before applying SUM, AVG, MIN, MAX, or arithmetic to a column, verify that the chosen column is numeric in the active metadata. Do not aggregate text/string columns as numeric values.
+11. Do not prefix table names with catalog or schema names unless the active metadata, DATABASE SCHEMA, or VALID TABLE NAMES section shows the table name with that exact prefix.
 
 {text_to_sql_rules}
 
