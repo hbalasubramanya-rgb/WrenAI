@@ -765,7 +765,14 @@ export class AskingService implements IAskingService {
    */
   public async createThread(input: AskingDetailTaskInput): Promise<Thread> {
     // 1. create a thread and the first thread response
-    const { id } = await this.projectService.getCurrentProject();
+    const project = await this.projectService.getCurrentProject();
+    const { id } = project;
+    const trackedAskingResult =
+      await this.createTrackedAskingResultFromShortcutSql(input, {
+        projectId: id,
+        language: WrenAILanguage[project.language] || WrenAILanguage.EN,
+      });
+
     const thread = await this.threadRepository.createOne({
       projectId: id,
       summary: input.question,
@@ -774,15 +781,15 @@ export class AskingService implements IAskingService {
     const threadResponse = await this.threadResponseRepository.createOne({
       threadId: thread.id,
       question: input.question,
-      sql: input.sql,
-      askingTaskId: input.trackedAskingResult?.taskId,
+      sql: trackedAskingResult ? undefined : input.sql,
+      askingTaskId: trackedAskingResult?.taskId,
     });
 
     // if queryId is provided, update asking task
-    if (input.trackedAskingResult?.taskId) {
+    if (trackedAskingResult?.taskId) {
       await this.askingTaskTracker.bindThreadResponse(
-        input.trackedAskingResult.taskId,
-        input.trackedAskingResult.queryId,
+        trackedAskingResult.taskId,
+        trackedAskingResult.queryId,
         thread.id,
         threadResponse.id,
       );
@@ -827,18 +834,25 @@ export class AskingService implements IAskingService {
       throw new Error(`Thread ${threadId} not found`);
     }
 
+    const project = await this.projectService.getProjectById(thread.projectId);
+    const trackedAskingResult =
+      await this.createTrackedAskingResultFromShortcutSql(input, {
+        projectId: thread.projectId,
+        language: WrenAILanguage[project.language] || WrenAILanguage.EN,
+      });
+
     const threadResponse = await this.threadResponseRepository.createOne({
       threadId: thread.id,
       question: input.question,
-      sql: input.sql,
-      askingTaskId: input.trackedAskingResult?.taskId,
+      sql: trackedAskingResult ? undefined : input.sql,
+      askingTaskId: trackedAskingResult?.taskId,
     });
 
     // if queryId is provided, update asking task
-    if (input.trackedAskingResult?.taskId) {
+    if (trackedAskingResult?.taskId) {
       await this.askingTaskTracker.bindThreadResponse(
-        input.trackedAskingResult.taskId,
-        input.trackedAskingResult.queryId,
+        trackedAskingResult.taskId,
+        trackedAskingResult.queryId,
         thread.id,
         threadResponse.id,
       );
@@ -1276,6 +1290,25 @@ export class AskingService implements IAskingService {
     }
 
     return this.projectService.getProjectById(thread.projectId);
+  }
+
+  private async createTrackedAskingResultFromShortcutSql(
+    input: AskingDetailTaskInput,
+    payload: AskingPayload,
+  ): Promise<TrackedAskingResult | undefined> {
+    if (input.trackedAskingResult || !input.sql || !input.question) {
+      return input.trackedAskingResult;
+    }
+
+    const task = await this.createAskingTask(
+      { question: input.question },
+      payload,
+    );
+    const trackedAskingResult = await this.getAskingTask(task.id);
+    if (!trackedAskingResult?.taskId) {
+      throw new Error(`Asking task ${task.id} not found`);
+    }
+    return trackedAskingResult;
   }
 
   public async adjustThreadResponseWithSQL(
