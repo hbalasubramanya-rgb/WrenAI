@@ -5372,7 +5372,6 @@ class AskService:
         schema_intent_analysis: dict[str, Any] = {}
         semantic_pipeline_active = False
         semantic_contract_available = False
-        semantic_support_error = None
         error_message = None
         invalid_sql = None
         allow_sql_generation_reasoning = (
@@ -6492,27 +6491,9 @@ class AskService:
                 )
 
             if (
-                semantic_pipeline_active
-                and semantic_contract_available
-                and not api_results
-            ):
-                semantic_support_error = get_schema_intent_analysis_error(
-                    schema_intent_analysis
-                )
-                if semantic_support_error:
-                    error_message = semantic_support_error
-                    logger.info(
-                        "semantic_pipeline_contract_rejected_before_generation query_id=%s reason=%s selected_schema_objects=%s",
-                        query_id,
-                        semantic_support_error,
-                        self._semantic_schema_objects(schema_intent_analysis),
-                    )
-
-            if (
                 not self._is_stopped(query_id, self._ask_results)
                 and not api_results
                 and (not semantic_pipeline_active or semantic_contract_available)
-                and not semantic_support_error
                 and allow_sql_generation_reasoning
             ):
                 self._ask_results[query_id] = AskResultResponse(
@@ -6588,7 +6569,6 @@ class AskService:
                 not self._is_stopped(query_id, self._ask_results)
                 and not api_results
                 and (not semantic_pipeline_active or semantic_contract_available)
-                and not semantic_support_error
             ):
                 self._ask_results[query_id] = AskResultResponse(
                     status="generating",

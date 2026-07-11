@@ -2396,38 +2396,6 @@ def _mapping_request_concept(mapping: dict[str, Any]) -> str:
     return str(mapping.get("request_concept") or "requested concept").strip()
 
 
-def _relationship_schema_references(schema_objects: list[str]) -> list[str]:
-    references: list[str] = []
-    for schema_object in schema_objects:
-        text = str(schema_object or "").strip()
-        if not text:
-            continue
-
-        table_column_matches = re.findall(
-            r'(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_.$]*))\s*\.\s*'
-            r'(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_$]*))',
-            text,
-        )
-        for table_quoted, table_bare, column_quoted, column_bare in table_column_matches:
-            table = table_quoted or table_bare
-            column = column_quoted or column_bare
-            if table and column:
-                references.append(f"{table}.{column}")
-
-        table_parentheses_matches = re.findall(
-            r'(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_.$]*))\s*\(\s*'
-            r'(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_$]*))\s*\)',
-            text,
-        )
-        for table_quoted, table_bare, column_quoted, column_bare in table_parentheses_matches:
-            table = table_quoted or table_bare
-            column = column_quoted or column_bare
-            if table and column:
-                references.append(f"{table}.{column}")
-
-    return list(dict.fromkeys(reference for reference in references if reference))
-
-
 def construct_semantic_schema_contract(
     semantic_analysis: dict[str, Any] | None,
 ) -> str:
@@ -2715,33 +2683,6 @@ def validate_sql_intent_alignment(
                 f"{concept_type or 'concept'} '{_mapping_request_concept(mapping)}' "
                 "to a schema object."
             )
-        if concept_type == "relationship":
-            if not re.search(r"\bJOIN\b", sql or "", flags=re.IGNORECASE):
-                return (
-                    "Generated SQL does not include the join required by the "
-                    f"relationship '{_mapping_request_concept(mapping)}'."
-                )
-            relationship_references = _relationship_schema_references(schema_objects)
-            if relationship_references and not all(
-                _sql_references_schema_object(
-                    sql,
-                    relationship_reference,
-                    valid_table_columns,
-                )
-                for relationship_reference in relationship_references
-            ):
-                return (
-                    "Generated SQL does not reference every mapped join object "
-                    f"required by relationship '{_mapping_request_concept(mapping)}': "
-                    f"{', '.join(relationship_references)}."
-                )
-            continue
-        if concept_type == "metric" and _sql_is_plain_count(sql) and not requests_count:
-            return (
-                "Generated SQL answers with a generic record count, but the "
-                f"requested metric '{_mapping_request_concept(mapping)}' must be "
-                "retrieved or calculated from the mapped schema object."
-            )
         if not any(
             _sql_references_schema_object(sql, schema_object, valid_table_columns)
             for schema_object in schema_objects
@@ -2750,6 +2691,12 @@ def validate_sql_intent_alignment(
                 "Generated SQL does not reference schema objects mapped to the "
                 f"required {concept_type or 'concept'} "
                 f"'{_mapping_request_concept(mapping)}': {', '.join(schema_objects)}."
+            )
+        if concept_type == "metric" and _sql_is_plain_count(sql) and not requests_count:
+            return (
+                "Generated SQL answers with a generic record count, but the "
+                f"requested metric '{_mapping_request_concept(mapping)}' must be "
+                "retrieved or calculated from the mapped schema object."
             )
 
     if _semantic_analysis_items(semantic_analysis, "ranking") and not re.search(
