@@ -4564,7 +4564,7 @@ class AskService:
             return documents, table_names, table_ddls, {}
 
         logger.info(
-            "Completed SQL generation context with full schemas for project_id %s tables=%s",
+            "Completed SQL generation context with selected schemas for project_id %s tables=%s",
             project_id,
             complete_table_names,
         )
@@ -5512,11 +5512,11 @@ class AskService:
                     if not documents:
                         logger.info(
                             "Explicit table retrieval did not return requested active-schema table; "
-                            "loading full active schema. query_id=%s",
+                            "retrying query-scoped schema retrieval. query_id=%s",
                             query_id,
                         )
                         retrieval_result = await self._run_with_timeout(
-                            "Full active schema retrieval for explicit table",
+                            "Query-scoped schema retrieval for explicit table",
                             self._pipelines["db_schema_retrieval"].run(
                                 query=user_query,
                                 project_id=ask_request.project_id,
@@ -6158,44 +6158,10 @@ class AskService:
                     and self._is_data_analysis_query(user_query)
                 ):
                     logger.info(
-                        "Query-based schema retrieval returned no tables for data question; "
-                        "retrying full active deployed schema for query_id %s",
+                        "Query-based schema retrieval returned no relevant tables for data question; "
+                        "not loading unrelated project schema for query_id %s",
                         query_id,
                     )
-                    retrieval_result = await self._run_with_timeout(
-                        "Full active schema retrieval",
-                        self._pipelines["db_schema_retrieval"].run(
-                            query="",
-                            histories=[],
-                            project_id=ask_request.project_id,
-                            enable_column_pruning=False,
-                        ),
-                        timeout_seconds=min(
-                            self._schema_retrieval_timeout_seconds,
-                            self._pipeline_timeout_seconds,
-                            20,
-                        ),
-                    )
-                    _retrieval_result = retrieval_result.get(
-                        "construct_retrieval_results", {}
-                    )
-                    schema_intent_analysis = _retrieval_result.get(
-                        "semantic_analysis", {}
-                    )
-                    semantic_pipeline_active = True
-                    semantic_contract_available = self._semantic_analysis_has_contract(
-                        schema_intent_analysis
-                    )
-                    documents, table_names, table_ddls = (
-                        self._extract_retrieval_metadata(retrieval_result)
-                    )
-                    if explicit_table_names:
-                        documents, table_names, table_ddls = (
-                            self._filter_retrieval_metadata_for_explicit_query(
-                                user_query,
-                                documents,
-                            )
-                        )
                 logger.info(
                     "Retrieved tables for query_id %s: %s", query_id, table_names
                 )
@@ -6352,89 +6318,16 @@ class AskService:
                             "Schema-grounded SQL was not valid for the active datasource schema and question intent."
                         )
 
-                should_retry_full_schema = (
+                if (
                     not api_results
                     and not semantic_pipeline_active
                     and self._is_data_analysis_query(user_query)
                     and "db_schema_retrieval" in self._pipelines
-                )
-                if should_retry_full_schema:
+                ):
                     logger.info(
-                        "No grounded SQL from retrieved schema; retrying with full active deployed schema for query_id %s",
+                        "No grounded SQL from retrieved schema; not retrying with full project schema for query_id %s",
                         query_id,
                     )
-                    retrieval_result = await self._run_with_timeout(
-                        "Full active schema retry",
-                        self._pipelines["db_schema_retrieval"].run(
-                            query="",
-                            histories=[],
-                            project_id=ask_request.project_id,
-                            enable_column_pruning=False,
-                        ),
-                        timeout_seconds=min(
-                            self._schema_retrieval_timeout_seconds,
-                            self._pipeline_timeout_seconds,
-                            30,
-                        ),
-                    )
-                    _retrieval_result = retrieval_result.get(
-                        "construct_retrieval_results", {}
-                    )
-                    full_documents, full_table_names, full_table_ddls = (
-                        self._extract_retrieval_metadata(retrieval_result)
-                    )
-                    if explicit_table_names:
-                        full_documents, full_table_names, full_table_ddls = (
-                            self._filter_retrieval_metadata_for_explicit_query(
-                                user_query,
-                                full_documents,
-                            )
-                        )
-                    if full_documents:
-                        documents, table_names, table_ddls = (
-                            full_documents,
-                            full_table_names,
-                            full_table_ddls,
-                        )
-                        logger.info(
-                            "Using full active deployed schema retry for query_id %s: %s",
-                            query_id,
-                            table_names,
-                        )
-
-                        full_schema_preview = self._build_explicit_table_preview_sql(
-                            user_query, table_ddls
-                        )
-                        full_schema_sql_candidates = (
-                            self._build_schema_grounded_table_question_sql(
-                                user_query, table_ddls
-                            ),
-                            full_schema_preview[0] if full_schema_preview else None,
-                            self._build_audit_log_activity_sql(
-                                user_query, table_ddls, table_names=table_names
-                            ),
-                            self._build_schema_grounded_analytics_sql(
-                                user_query, table_ddls
-                            ),
-                            self._build_schema_grounded_sales_sql(
-                                user_query, table_ddls
-                            ),
-                        )
-                        for full_schema_sql in full_schema_sql_candidates:
-                            if not full_schema_sql:
-                                continue
-                            ask_result = self._build_validated_ask_result_from_sql(
-                                full_schema_sql,
-                                table_ddls,
-                                user_query,
-                            )
-                            if ask_result:
-                                api_results = [ask_result]
-                                break
-                            invalid_sql = full_schema_sql
-                            error_message = (
-                                "Full-schema grounded SQL was not valid for the active datasource schema and question intent."
-                            )
 
                 if not api_results and (
                     unqueryable_metric_message := self._get_unqueryable_metric_message(

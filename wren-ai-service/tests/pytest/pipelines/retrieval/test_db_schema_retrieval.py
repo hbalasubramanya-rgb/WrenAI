@@ -97,7 +97,104 @@ def test_rank_semantic_schema_candidates_uses_retry_rejections_as_negative_feedb
 
 
 @pytest.mark.asyncio
-async def test_dbschema_retrieval_loads_complete_active_project_schema():
+async def test_dbschema_retrieval_loads_only_selected_active_project_schema():
+    class Retriever:
+        def __init__(self):
+            self.filters = None
+            self.documents = [
+                Document(
+                    content=str(
+                        {
+                            "type": "TABLE",
+                            "name": "orders",
+                            "columns": [],
+                        }
+                    ),
+                    meta={"type": "TABLE_SCHEMA", "name": "orders"},
+                ),
+                Document(
+                    content=str(
+                        {
+                            "type": "TABLE",
+                            "name": "customers",
+                            "columns": [],
+                        }
+                    ),
+                    meta={"type": "TABLE_SCHEMA", "name": "customers"},
+                ),
+            ]
+
+        async def run(self, query_embedding, filters):
+            self.filters = filters
+            requested_names = {
+                condition["value"]
+                for condition in filters["conditions"][-1]["conditions"]
+            }
+            return {
+                "documents": [
+                    document
+                    for document in self.documents
+                    if document.meta["name"] in requested_names
+                ]
+            }
+
+    retriever = Retriever()
+
+    documents = await dbschema_retrieval(
+        query="total orders",
+        table_retrieval={
+            "documents": [
+                Document(
+                    content=str({"name": "orders"}),
+                    meta={"type": "TABLE_DESCRIPTION", "name": "orders"},
+                )
+            ]
+        },
+        project_id="project-1",
+        dbschema_retriever=retriever,
+    )
+
+    assert [document.meta["name"] for document in documents] == ["orders"]
+    assert retriever.filters == {
+        "operator": "AND",
+        "conditions": [
+            {"field": "type", "operator": "==", "value": "TABLE_SCHEMA"},
+            {"field": "project_id", "operator": "==", "value": "project-1"},
+            {
+                "operator": "OR",
+                "conditions": [
+                    {"field": "name", "operator": "==", "value": "orders"},
+                ],
+            },
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_dbschema_retrieval_does_not_load_full_schema_for_unmatched_query():
+    class Retriever:
+        def __init__(self):
+            self.called = False
+
+        async def run(self, query_embedding, filters):
+            self.called = True
+            return {"documents": []}
+
+    retriever = Retriever()
+
+    documents = await dbschema_retrieval(
+        query="total orders",
+        table_retrieval={"documents": []},
+        project_id="project-1",
+        dbschema_retriever=retriever,
+    )
+
+    assert documents == []
+    assert retriever.called is False
+
+
+@pytest.mark.asyncio
+async def test_dbschema_retrieval_keeps_complete_schema_for_metadata_request():
     class Retriever:
         def __init__(self):
             self.filters = None
@@ -132,20 +229,16 @@ async def test_dbschema_retrieval_loads_complete_active_project_schema():
     retriever = Retriever()
 
     documents = await dbschema_retrieval(
-        query="total orders",
-        table_retrieval={
-            "documents": [
-                Document(
-                    content=str({"name": "orders"}),
-                    meta={"type": "TABLE_DESCRIPTION", "name": "orders"},
-                )
-            ]
-        },
+        query="",
+        table_retrieval={"documents": []},
         project_id="project-1",
         dbschema_retriever=retriever,
     )
 
-    assert [document.meta["name"] for document in documents] == ["orders", "customers"]
+    assert [document.meta["name"] for document in documents] == [
+        "orders",
+        "customers",
+    ]
     assert retriever.filters == {
         "operator": "AND",
         "conditions": [

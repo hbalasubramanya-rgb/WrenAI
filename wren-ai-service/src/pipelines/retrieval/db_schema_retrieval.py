@@ -276,6 +276,48 @@ def _dedupe_documents(documents: list[Document]) -> list[Document]:
     return deduped
 
 
+def _normalize_table_name(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _explicit_table_name_aliases(table_name: str) -> set[str]:
+    normalized = _normalize_table_name(table_name)
+    if not normalized:
+        return set()
+
+    aliases = {normalized}
+    dotted_parts = [part for part in re.split(r"[.]", normalized) if part]
+    if len(dotted_parts) > 1:
+        aliases.add(dotted_parts[-1])
+        aliases.add("_".join(dotted_parts))
+
+    return {alias for alias in aliases if alias}
+
+
+def _table_name_from_description(document: Document) -> str:
+    if document.meta.get("name"):
+        return _normalize_table_name(document.meta.get("name"))
+    try:
+        content = ast.literal_eval(document.content)
+        return _normalize_table_name(content.get("name"))
+    except Exception:
+        return ""
+
+
+def _selected_table_names(
+    table_retrieval: dict,
+    explicit_tables: Optional[list[str]] = None,
+) -> list[str]:
+    selected: list[str] = []
+    for table in explicit_tables or []:
+        selected.extend(_explicit_table_name_aliases(table))
+
+    for document in table_retrieval.get("documents", []) or []:
+        selected.append(_table_name_from_description(document))
+
+    return list(dict.fromkeys(table for table in selected if table))
+
+
 _SEMANTIC_TOKEN_STOPWORDS = {
     "a",
     "an",
@@ -608,6 +650,7 @@ async def dbschema_retrieval(
     dbschema_retriever: Any,
     tables: Optional[list[str]] = None,
 ) -> list[Document]:
+    selected_tables = _selected_table_names(table_retrieval, tables)
     filters = {
         "operator": "AND",
         "conditions": [
@@ -619,12 +662,38 @@ async def dbschema_retrieval(
             {"field": "project_id", "operator": "==", "value": project_id}
         )
 
+    if selected_tables:
+        filters["conditions"].append(
+            {
+                "operator": "OR",
+                "conditions": [
+                    {"field": "name", "operator": "==", "value": table_name}
+                    for table_name in selected_tables
+                ],
+            }
+        )
+        logger.info(
+            "Loading selected deployed schema metadata for active project_id %s tables=%s",
+            project_id,
+            selected_tables,
+        )
+        results = await dbschema_retriever.run(query_embedding=[], filters=filters)
+        return _dedupe_documents(results.get("documents", []))
+
+    if query:
+        logger.info(
+            "No relevant table descriptions found for active project_id %s query=%s",
+            project_id,
+            query,
+        )
+        return []
+
     logger.info(
-        "Loading complete deployed schema metadata for active project_id %s",
+        "Loading complete deployed schema metadata for metadata request in active project_id %s",
         project_id,
     )
     results = await dbschema_retriever.run(query_embedding=[], filters=filters)
-    return results.get("documents", [])
+    return _dedupe_documents(results.get("documents", []))
 
 
 @observe()
