@@ -194,6 +194,96 @@ async def test_dbschema_retrieval_does_not_load_full_schema_for_unmatched_query(
 
 
 @pytest.mark.asyncio
+async def test_dbschema_retrieval_loads_all_selected_related_tables_only():
+    class Retriever:
+        def __init__(self):
+            self.filters = None
+            self.documents = [
+                Document(
+                    content=str(
+                        {
+                            "type": "TABLE",
+                            "name": "orders",
+                            "columns": [
+                                {"name": "customer_id", "data_type": "integer"},
+                            ],
+                        }
+                    ),
+                    meta={"type": "TABLE_SCHEMA", "name": "orders"},
+                ),
+                Document(
+                    content=str(
+                        {
+                            "type": "TABLE",
+                            "name": "customers",
+                            "columns": [
+                                {"name": "id", "data_type": "integer"},
+                                {"name": "name", "data_type": "varchar"},
+                            ],
+                        }
+                    ),
+                    meta={"type": "TABLE_SCHEMA", "name": "customers"},
+                ),
+                Document(
+                    content=str(
+                        {
+                            "type": "TABLE",
+                            "name": "products",
+                            "columns": [],
+                        }
+                    ),
+                    meta={"type": "TABLE_SCHEMA", "name": "products"},
+                ),
+            ]
+
+        async def run(self, query_embedding, filters):
+            self.filters = filters
+            requested_names = {
+                condition["value"]
+                for condition in filters["conditions"][-1]["conditions"]
+            }
+            return {
+                "documents": [
+                    document
+                    for document in self.documents
+                    if document.meta["name"] in requested_names
+                ]
+            }
+
+    retriever = Retriever()
+
+    documents = await dbschema_retrieval(
+        query="show orders by customer",
+        table_retrieval={
+            "documents": [
+                Document(
+                    content=str({"name": "orders"}),
+                    meta={"type": "TABLE_DESCRIPTION", "name": "orders"},
+                ),
+                Document(
+                    content=str({"name": "customers"}),
+                    meta={"type": "TABLE_DESCRIPTION", "name": "customers"},
+                ),
+            ]
+        },
+        project_id="project-1",
+        dbschema_retriever=retriever,
+    )
+
+    assert [document.meta["name"] for document in documents] == [
+        "orders",
+        "customers",
+    ]
+    assert retriever.filters["conditions"][-1] == {
+        "operator": "OR",
+        "conditions": [
+            {"field": "name", "operator": "==", "value": "orders"},
+            {"field": "name", "operator": "==", "value": "customers"},
+        ],
+    }
+
+
+@pytest.mark.asyncio
 async def test_dbschema_retrieval_keeps_complete_schema_for_metadata_request():
     class Retriever:
         def __init__(self):

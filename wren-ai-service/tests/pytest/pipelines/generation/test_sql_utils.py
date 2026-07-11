@@ -311,6 +311,82 @@ def test_schema_intent_validation_requires_ranking_shape():
     assert "sorting and limiting" in error
 
 
+def test_schema_intent_validation_requires_join_for_relationship_mapping():
+    semantic_analysis = {
+        "analytical_intent": "summary",
+        "relationships": ["orders to customers"],
+        "concept_mappings": [
+            {
+                "request_concept": "orders to customers",
+                "concept_type": "relationship",
+                "schema_objects": ["orders.customer_id", "customers.id"],
+                "required_in_sql": True,
+            }
+        ],
+    }
+
+    error = validate_sql_intent_alignment(
+        "Show orders by customer",
+        'SELECT "orders"."customer_id", COUNT(*) FROM "orders" GROUP BY "orders"."customer_id"',
+        {"orders": ["customer_id"], "customers": ["id"]},
+        semantic_analysis=semantic_analysis,
+    )
+
+    assert "does not include the join" in error
+
+
+def test_schema_intent_validation_requires_all_relationship_join_objects():
+    semantic_analysis = {
+        "analytical_intent": "summary",
+        "relationships": ["orders to customers"],
+        "concept_mappings": [
+            {
+                "request_concept": "orders to customers",
+                "concept_type": "relationship",
+                "schema_objects": ["orders.customer_id -> customers.id"],
+                "required_in_sql": True,
+            }
+        ],
+    }
+
+    error = validate_sql_intent_alignment(
+        "Show orders by customer",
+        'SELECT "orders"."customer_id", COUNT(*) FROM "orders" '
+        'JOIN "customers" ON "orders"."customer_id" = "orders"."customer_id" '
+        'GROUP BY "orders"."customer_id"',
+        {"orders": ["customer_id"], "customers": ["id"]},
+        semantic_analysis=semantic_analysis,
+    )
+
+    assert "does not reference every mapped join object" in error
+
+
+def test_schema_intent_validation_accepts_mapped_relationship_join():
+    semantic_analysis = {
+        "analytical_intent": "summary",
+        "relationships": ["orders to customers"],
+        "concept_mappings": [
+            {
+                "request_concept": "orders to customers",
+                "concept_type": "relationship",
+                "schema_objects": ["orders.customer_id -> customers.id"],
+                "required_in_sql": True,
+            }
+        ],
+    }
+
+    error = validate_sql_intent_alignment(
+        "Show orders by customer",
+        'SELECT "customers"."id", COUNT(*) FROM "orders" '
+        'JOIN "customers" ON "orders"."customer_id" = "customers"."id" '
+        'GROUP BY "customers"."id"',
+        {"orders": ["customer_id"], "customers": ["id"]},
+        semantic_analysis=semantic_analysis,
+    )
+
+    assert error is None
+
+
 def test_schema_intent_analysis_reports_missing_required_mapping():
     semantic_analysis = {
         "concept_mappings": [
