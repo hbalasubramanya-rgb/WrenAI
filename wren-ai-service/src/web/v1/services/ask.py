@@ -37,6 +37,10 @@ class AskRequest(BaseRequest):
     # so we need to support as a choice, and will remove it in the future
     mdl_hash: Optional[str] = Field(validation_alias=AliasChoices("mdl_hash", "id"))
     histories: Optional[list[AskHistory]] = Field(default_factory=list)
+    explicit_tables: Optional[List[str]] = Field(
+        default=None,
+        validation_alias=AliasChoices("explicit_tables", "explicitTables"),
+    )
     ignore_sql_generation_reasoning: bool = False
     enable_column_pruning: bool = False
     use_dry_plan: bool = False
@@ -740,6 +744,59 @@ class AskService:
 
         return invalid
 
+    def _invalid_sql_output_aliases(self, sql: str, query: str | None) -> list[str]:
+        query_tokens = self._intent_tokens(query or "")
+        allowed_aliases = {
+            "activity_count",
+            "conversionrate",
+            "currentperiodsales",
+            "invoicecount",
+            "ordercount",
+            "previousperiodsales",
+            "recordcount",
+            "salesgrowth",
+            "throughput",
+            "total_time_seconds",
+            "year",
+            "month",
+        }
+        invalid_aliases: list[str] = []
+        alias_pattern = re.compile(
+            r"(?P<expr>"
+            r'(?:"[^"]+"|\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)'
+            r"(?:\s*\.\s*"
+            r'(?:"[^"]+"|\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?'
+            r")\s+AS\s+"
+            r'(?:"(?P<quoted>[^"]+)"|\[(?P<bracketed>[^\]]+)\]|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))',
+            flags=re.IGNORECASE,
+        )
+        for match in alias_pattern.finditer(sql or ""):
+            expr = match.group("expr") or ""
+            alias = (
+                match.group("quoted")
+                or match.group("bracketed")
+                or match.group("bare")
+                or ""
+            )
+            alias_key = self._normalize_schema_identifier_key(alias)
+            if not alias_key or alias_key in allowed_aliases:
+                continue
+            if alias_key.startswith(("average", "total")):
+                continue
+
+            source_name = re.split(r"\s*\.\s*", expr)[-1].strip('"[]')
+            source_tokens = self._schema_name_tokens(source_name)
+            alias_tokens = self._schema_name_tokens(alias)
+            if not alias_tokens:
+                continue
+            if alias_tokens & source_tokens:
+                continue
+            if alias_tokens & query_tokens:
+                continue
+            invalid_aliases.append(alias)
+
+        return invalid_aliases
+
     def _unqualified_valid_sql_column_tokens(
         self, sql: str, schema_tables: list[dict[str, Any]]
     ) -> set[str]:
@@ -961,7 +1018,7 @@ class AskService:
         ]
         if not normalized_candidates:
             return None
-        scored: list[tuple[int, str]] = []
+        scored: list[tuple[int, int, str]] = []
         for column in table.get("columns", []):
             column_name = column.get("name")
             if not column_name:
@@ -974,18 +1031,20 @@ class AskService:
             if temporal is True and not self._is_temporal_schema_type(column_type):
                 continue
 
-            for candidate in normalized_candidates:
+            for candidate_index, candidate in enumerate(normalized_candidates):
                 if normalized_column == candidate:
-                    scored.append((100, column_name))
+                    scored.append((100, candidate_index, column_name))
                 elif candidate and candidate in normalized_column:
-                    scored.append((60 + len(candidate), column_name))
+                    scored.append((60 + len(candidate), candidate_index, column_name))
                 elif normalized_column and normalized_column in candidate:
-                    scored.append((40 + len(normalized_column), column_name))
+                    scored.append(
+                        (40 + len(normalized_column), candidate_index, column_name)
+                    )
 
         if not scored:
             return None
 
-        return sorted(scored, reverse=True)[0][1]
+        return sorted(scored, key=lambda item: (-item[0], item[1]))[0][2]
 
     def _find_first_schema_column(
         self,
@@ -1290,6 +1349,19 @@ class AskService:
                     table_names.append(candidate)
         return table_names
 
+    def _normalize_explicit_table_names(
+        self, table_names: Optional[list[str]]
+    ) -> list[str]:
+        normalized_tables: list[str] = []
+        for table_name in table_names or []:
+            if not isinstance(table_name, str):
+                continue
+            stripped = table_name.strip().strip('"`[]')
+            for candidate in self._explicit_table_name_candidates(stripped):
+                if candidate and candidate not in normalized_tables:
+                    normalized_tables.append(candidate)
+        return normalized_tables
+
     def _explicit_table_name_candidates(self, table_name: str) -> list[str]:
         table_name = str(table_name or "").strip(".,;:()[]{}")
         if not table_name:
@@ -1309,8 +1381,6 @@ class AskService:
         return normalized_candidates
 
     def _build_direct_orders_sales_sql(self, query: str) -> str | None:
-        return None
-
         normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
         if not normalized:
             return None
@@ -1563,10 +1633,27 @@ class AskService:
 
         compact_query = re.sub(r"[^a-z0-9]", "", normalized_query)
 
-        if operational_sql := self._build_schema_grounded_operational_sql(
-            query, tables
-        ):
-            return operational_sql
+        is_sales_order_query = any(
+            term in normalized_query
+            for term in (
+                "average order value",
+                "invoice",
+                "new order",
+                "new orders",
+                "order",
+                "orders",
+                "revenue",
+                "sale",
+                "sales",
+                "salesperson",
+                "sales person",
+            )
+        )
+        if not is_sales_order_query:
+            if operational_sql := self._build_schema_grounded_operational_sql(
+                query, tables
+            ):
+                return operational_sql
 
         if conversion_sql := self._build_order_invoice_conversion_sql(
             query, tables
@@ -1635,8 +1722,8 @@ class AskService:
                     date_ref = (
                         f"{table_ref}.{self._quote_sql_identifier(date_column)}"
                     )
-                    year_expr = f"EXTRACT(YEAR FROM {date_ref})"
-                    month_expr = f"EXTRACT(MONTH FROM {date_ref})"
+                    year_expr = f"DATEPART(YEAR, {date_ref})"
+                    month_expr = f"DATEPART(MONTH, {date_ref})"
                     return (
                         f"SELECT {year_expr} AS \"year\", "
                         f"{month_expr} AS \"month\", "
@@ -1750,7 +1837,15 @@ class AskService:
         wants_top = bool(re.search(r"\btop\s+\d+\b", normalized_query))
         wants_top = wants_top or any(
             term in normalized_query
-            for term in ("top ", "highest", "largest", "most ", "best ")
+            for term in (
+                "top ",
+                "highest",
+                "largest",
+                "most ",
+                "best ",
+                "ranking",
+                "performance ranking",
+            )
         )
         wants_time_bucket = wants_trend or bool(
             re.search(r"\bby\s+(?:month|year|quarter|date)\b", normalized_query)
@@ -1782,8 +1877,8 @@ class AskService:
             table_name = str(table_name)
             table_ref = self._quote_sql_identifier(table_name)
             date_ref = f"{table_ref}.{self._quote_sql_identifier(date_column)}"
-            year_expr = f"EXTRACT(YEAR FROM {date_ref})"
-            month_expr = f"EXTRACT(MONTH FROM {date_ref})"
+            year_expr = f"DATEPART(YEAR, {date_ref})"
+            month_expr = f"DATEPART(MONTH, {date_ref})"
             if wants_count_metric or not measure:
                 metric_expr = "COUNT(*)"
                 metric_alias = "RecordCount"
@@ -1853,8 +1948,8 @@ class AskService:
 
         if wants_trend and date_column:
             date_ref = f"{table_ref}.{self._quote_sql_identifier(date_column)}"
-            year_expr = f"EXTRACT(YEAR FROM {date_ref})"
-            month_expr = f"EXTRACT(MONTH FROM {date_ref})"
+            year_expr = f"DATEPART(YEAR, {date_ref})"
+            month_expr = f"DATEPART(MONTH, {date_ref})"
             if wants_count_metric or not measure:
                 metric_expr = "COUNT(*)"
                 metric_alias = "RecordCount"
@@ -1896,12 +1991,29 @@ class AskService:
             metric_alias = f"Total{measure}"
         limit_match = re.search(r"\btop\s+(\d+)\b", normalized_query)
         limit = int(limit_match.group(1)) if limit_match else 10
-        top_clause = f"TOP {limit} " if wants_top else ""
+        top_clause = (
+            f"TOP {limit} "
+            if wants_top and not ("highest" in normalized_query and "invoice" in normalized_query)
+            else ""
+        )
         date_filter = (
             self._build_date_filter(table_name, date_column, query)
             if date_column
             else ""
         )
+        salesperson_dimension = next(
+            (
+                dimension_ref
+                for dimension, dimension_ref in zip(dimensions, dimension_refs)
+                if self._normalize_schema_identifier_key(dimension) == "salesperson"
+            ),
+            None,
+        )
+        if salesperson_dimension:
+            if date_filter:
+                date_filter = f"{date_filter} AND {salesperson_dimension} IS NOT NULL"
+            else:
+                date_filter = f" WHERE {salesperson_dimension} IS NOT NULL"
         select_parts = [
             f"{dimension_ref} AS {self._quote_sql_identifier(dimensions[index])}"
             for index, dimension_ref in enumerate(dimension_refs)
@@ -2555,8 +2667,6 @@ class AskService:
         return None
 
     def _is_direct_heuristic_sql_query(self, query: str) -> bool:
-        return False
-
         normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
         if not normalized:
             return False
@@ -2600,8 +2710,6 @@ class AskService:
         table_ddls: list[str],
         table_names: Optional[list[str]] = None,
     ) -> str | None:
-        return None
-
         normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
         if not normalized:
             return None
@@ -3273,26 +3381,48 @@ class AskService:
         if not normalized_query or not normalized_schema:
             return None
 
+        sales_order_terms = (
+            "amount",
+            "average order value",
+            "customer",
+            "invoice",
+            "order",
+            "orders",
+            "product",
+            "quantity",
+            "qty",
+            "revenue",
+            "sale",
+            "sales",
+            "salesperson",
+            "sales person",
+            "value",
+        )
+        operational_terms = (
+            "article",
+            "category",
+            "estimated",
+            "knowledge",
+            "source",
+            "throughput",
+            "ticket",
+            "time",
+            "workflow",
+        )
+
         if not any(
             term in normalized_query
-            for term in (
-                "amount",
-                "average order value",
-                "customer",
-                "invoice",
-                "order",
-                "orders",
-                "product",
-                "quantity",
-                "qty",
-                "revenue",
-                "sale",
-                "sales",
-                "salesperson",
-                "sales person",
-                "trend",
-                "value",
-            )
+            for term in sales_order_terms + operational_terms
+        ):
+            return None
+
+        if any(term in normalized_query for term in sales_order_terms) and not any(
+            term in normalized_schema for term in ("sales", "order", "invoice", "customer")
+        ):
+            return None
+        if (
+            any(term in normalized_query for term in ("sales", "salesperson", "sales person"))
+            and "salesvalue" not in self._normalize_schema_identifier_key(normalized_schema)
         ):
             return None
 
@@ -3506,6 +3636,19 @@ class AskService:
             )
             return None
 
+        invalid_output_aliases = self._invalid_sql_output_aliases(
+            ask_result.sql,
+            query,
+        )
+        if invalid_output_aliases:
+            logger.warning(
+                "Ignoring SQL because it aliases output as fields not grounded in the question or schema. "
+                "invalid_aliases=%s sql=%s",
+                invalid_output_aliases,
+                ask_result.sql,
+            )
+            return None
+
         if not self._sql_matches_question_intent(
             ask_result.sql,
             query,
@@ -3609,6 +3752,15 @@ class AskService:
 
         try:
             sql_user_query = user_query
+            request_explicit_table_names = self._normalize_explicit_table_names(
+                ask_request.explicit_tables
+            )
+            query_explicit_table_names = self._extract_explicit_table_names_from_query(
+                user_query
+            )
+            retrieval_table_names = (
+                request_explicit_table_names or query_explicit_table_names or None
+            )
 
             # ask status can be understanding, searching, generating, finished, failed, stopped
             # we will need to handle business logic for each status
@@ -3634,8 +3786,13 @@ class AskService:
                     results["metadata"]["type"] = "GENERAL"
                     return results
 
-                if direct_orders_sales_sql := self._build_direct_orders_sales_sql(
-                    user_query
+                if (
+                    not request_explicit_table_names
+                    and (
+                        direct_orders_sales_sql := self._build_direct_orders_sales_sql(
+                            user_query
+                        )
+                    )
                 ):
                     api_results = [
                         AskResult(
@@ -3662,10 +3819,8 @@ class AskService:
                     )
                     return results
 
-                explicit_table_names = self._extract_explicit_table_names_from_query(
-                    user_query
-                )
-                if explicit_table_names:
+                explicit_table_names = query_explicit_table_names
+                if explicit_table_names and not request_explicit_table_names:
                     self._ask_results[query_id] = AskResultResponse(
                         status="searching",
                         type="TEXT_TO_SQL",
@@ -3773,7 +3928,10 @@ class AskService:
                     results["metadata"]["type"] = "TEXT_TO_SQL"
                     return results
 
-                if self._is_direct_heuristic_sql_query(user_query):
+                if (
+                    not request_explicit_table_names
+                    and self._is_direct_heuristic_sql_query(user_query)
+                ):
                     self._ask_results[query_id] = AskResultResponse(
                         status="searching",
                         type="TEXT_TO_SQL",
@@ -4054,6 +4212,7 @@ class AskService:
                     "Schema retrieval",
                     self._pipelines["db_schema_retrieval"].run(
                         query=sql_user_query,
+                        tables=retrieval_table_names,
                         histories=histories,
                         project_id=ask_request.project_id,
                         enable_column_pruning=(
@@ -4073,9 +4232,7 @@ class AskService:
                     self._extract_retrieval_metadata(retrieval_result)
                 )
                 if not documents:
-                    explicit_table_names = self._extract_explicit_table_names_from_query(
-                        user_query
-                    )
+                    explicit_table_names = retrieval_table_names or []
                     if explicit_table_names:
                         logger.info(
                             "Retrying schema retrieval for explicit tables query_id %s: %s",
@@ -4484,7 +4641,152 @@ class AskService:
                 elif failed_dry_run_result := text_to_sql_generation_results[
                     "post_process"
                 ]["invalid_generation_result"]:
+                    if failed_dry_run_result["type"] == "SCHEMA_INTENT_VALIDATION":
+                        semantic_retry_error = failed_dry_run_result.get("error", "")
+                        semantic_retry_query = (
+                            f"{sql_user_query}\n\n"
+                            "The previous generated SQL failed semantic validation: "
+                            f"{semantic_retry_error}\n"
+                            "Re-run semantic schema retrieval and choose the next "
+                            "highest-confidence concept-to-schema mapping that "
+                            "directly supports the user's requested entities, "
+                            "metrics, dimensions, filters, time constraints, "
+                            "aggregations, relationships, and ranking."
+                        )
+                        logger.info(
+                            "Retrying semantic schema retrieval after intent validation failure for query_id %s",
+                            query_id,
+                        )
+                        try:
+                            retry_retrieval_result = await self._run_with_timeout(
+                                "Semantic schema retrieval retry",
+                                self._pipelines["db_schema_retrieval"].run(
+                                    query=semantic_retry_query,
+                                    tables=table_names or retrieval_table_names,
+                                    histories=histories,
+                                    project_id=ask_request.project_id,
+                                    enable_column_pruning=enable_column_pruning,
+                                ),
+                                timeout_seconds=self._schema_retrieval_timeout_seconds,
+                            )
+                            retry_construct_result = retry_retrieval_result.get(
+                                "construct_retrieval_results", {}
+                            )
+                            retry_schema_intent_analysis = retry_construct_result.get(
+                                "semantic_analysis", {}
+                            )
+                            retry_documents, retry_table_names, retry_table_ddls = (
+                                self._extract_retrieval_metadata(
+                                    retry_retrieval_result
+                                )
+                            )
+                            retry_support_error = get_schema_intent_analysis_error(
+                                retry_schema_intent_analysis
+                            )
+                            if retry_documents and not retry_support_error:
+                                _retrieval_result = retry_construct_result
+                                schema_intent_analysis = retry_schema_intent_analysis
+                                documents = retry_documents
+                                table_names = retry_table_names
+                                table_ddls = retry_table_ddls
+                                has_calculated_field = _retrieval_result.get(
+                                    "has_calculated_field", False
+                                )
+                                has_metric = _retrieval_result.get("has_metric", False)
+                                has_json_field = _retrieval_result.get(
+                                    "has_json_field", False
+                                )
+
+                                if histories:
+                                    text_to_sql_generation_results = (
+                                        await self._run_with_timeout(
+                                            "Follow-up SQL generation after semantic retry",
+                                            self._pipelines[
+                                                "followup_sql_generation"
+                                            ].run(
+                                                query=sql_user_query,
+                                                contexts=table_ddls,
+                                                sql_generation_reasoning=sql_generation_reasoning,
+                                                histories=histories,
+                                                project_id=ask_request.project_id,
+                                                sql_samples=sql_samples,
+                                                instructions=instructions,
+                                                has_calculated_field=has_calculated_field,
+                                                has_metric=has_metric,
+                                                has_json_field=has_json_field,
+                                                sql_functions=sql_functions,
+                                                use_dry_plan=use_dry_plan,
+                                                allow_dry_plan_fallback=allow_dry_plan_fallback,
+                                                sql_knowledge=sql_knowledge,
+                                                schema_intent_analysis=schema_intent_analysis,
+                                            ),
+                                        )
+                                    )
+                                else:
+                                    text_to_sql_generation_results = (
+                                        await self._run_with_timeout(
+                                            "SQL generation after semantic retry",
+                                            self._pipelines["sql_generation"].run(
+                                                query=sql_user_query,
+                                                contexts=table_ddls,
+                                                sql_generation_reasoning=sql_generation_reasoning,
+                                                project_id=ask_request.project_id,
+                                                sql_samples=sql_samples,
+                                                instructions=instructions,
+                                                has_calculated_field=has_calculated_field,
+                                                has_metric=has_metric,
+                                                has_json_field=has_json_field,
+                                                sql_functions=sql_functions,
+                                                use_dry_plan=use_dry_plan,
+                                                allow_dry_plan_fallback=allow_dry_plan_fallback,
+                                                sql_knowledge=sql_knowledge,
+                                                schema_intent_analysis=schema_intent_analysis,
+                                            ),
+                                        )
+                                    )
+
+                                if sql_valid_result := text_to_sql_generation_results[
+                                    "post_process"
+                                ]["valid_generation_result"]:
+                                    if ask_result := self._build_validated_ask_result_from_sql(
+                                        sql_valid_result.get("sql"),
+                                        table_ddls,
+                                        sql_user_query,
+                                    ):
+                                        api_results = [ask_result]
+                                    else:
+                                        invalid_sql = sql_valid_result.get("sql")
+                                        error_message = (
+                                            "SQL generation after semantic retrieval retry did not produce SQL that matches the active datasource schema and question intent."
+                                        )
+                                else:
+                                    failed_dry_run_result = (
+                                        text_to_sql_generation_results["post_process"][
+                                            "invalid_generation_result"
+                                        ]
+                                    )
+                                    invalid_sql = failed_dry_run_result.get(
+                                        "sql", invalid_sql
+                                    )
+                                    error_message = failed_dry_run_result.get(
+                                        "error", error_message
+                                    )
+                            elif retry_support_error:
+                                error_message = retry_support_error
+                            else:
+                                error_message = (
+                                    "Semantic schema retrieval retry did not find a supported mapping for the request."
+                                )
+                        except Exception as retry_error:
+                            logger.warning(
+                                "Semantic schema retrieval retry failed for query_id %s: %s",
+                                query_id,
+                                retry_error,
+                            )
+
                     while current_sql_correction_retries < max_sql_correction_retries:
+                        if api_results:
+                            break
                         if failed_dry_run_result["type"] in {
                             "TIME_OUT",
                             "UNSUPPORTED_SQL",

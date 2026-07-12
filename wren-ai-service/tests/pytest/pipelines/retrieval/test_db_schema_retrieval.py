@@ -21,7 +21,7 @@ def test_expand_business_terms_for_retrieval_leaves_query_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_dbschema_retrieval_loads_complete_active_project_schema():
+async def test_dbschema_retrieval_loads_only_selected_active_project_tables():
     class Retriever:
         def __init__(self):
             self.filters = None
@@ -75,6 +75,60 @@ async def test_dbschema_retrieval_loads_complete_active_project_schema():
         "conditions": [
             {"field": "type", "operator": "==", "value": "TABLE_SCHEMA"},
             {"field": "project_id", "operator": "==", "value": "project-1"},
+            {"field": "name", "operator": "in", "value": ["orders"]},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_dbschema_retrieval_uses_explicit_tables_without_embedding_results():
+    class Retriever:
+        def __init__(self):
+            self.filters = None
+
+        async def run(self, query_embedding, filters):
+            self.filters = filters
+            return {
+                "documents": [
+                    Document(
+                        content=str(
+                            {
+                                "type": "TABLE",
+                                "name": "dbo_failure_patterns",
+                                "columns": [],
+                            }
+                        ),
+                        meta={
+                            "type": "TABLE_SCHEMA",
+                            "name": "dbo_failure_patterns",
+                        },
+                    )
+                ]
+            }
+
+    retriever = Retriever()
+
+    documents = await dbschema_retrieval(
+        query="show counts",
+        table_retrieval={"documents": []},
+        project_id="project-1",
+        dbschema_retriever=retriever,
+        tables=["dbo_failure_patterns"],
+    )
+
+    assert [document.meta["name"] for document in documents] == [
+        "dbo_failure_patterns"
+    ]
+    assert retriever.filters == {
+        "operator": "AND",
+        "conditions": [
+            {"field": "type", "operator": "==", "value": "TABLE_SCHEMA"},
+            {"field": "project_id", "operator": "==", "value": "project-1"},
+            {
+                "field": "name",
+                "operator": "in",
+                "value": ["dbo_failure_patterns"],
+            },
         ],
     }
 
@@ -91,6 +145,24 @@ def test_construct_retrieval_results_preserves_semantic_analysis():
                     "entities": ["invoice"],
                     "metrics": ["invoice amount"],
                     "dimensions": ["customer"],
+                    "concept_mappings": [
+                      {
+                        "request_concept": "invoice amount",
+                        "concept_type": "metric",
+                        "schema_objects": ["invoices.invoice_amount"],
+                        "required_in_sql": true,
+                        "confidence": 0.95,
+                        "mapping_reason": "invoice_amount stores invoice value"
+                      }
+                    ],
+                    "interpretations": [
+                      {
+                        "description": "Summarize invoice amount by customer",
+                        "schema_objects": ["invoices.customer_id", "invoices.invoice_amount"],
+                        "confidence": 0.9,
+                        "is_selected": true
+                      }
+                    ],
                     "is_fully_supported": true
                   },
                   "results": [
@@ -144,6 +216,10 @@ def test_construct_retrieval_results_preserves_semantic_analysis():
     )
 
     assert result["semantic_analysis"]["metrics"] == ["invoice amount"]
+    assert result["semantic_analysis"]["concept_mappings"][0]["schema_objects"] == [
+        "invoices.invoice_amount"
+    ]
+    assert result["semantic_analysis"]["interpretations"][0]["is_selected"] is True
     assert result["retrieval_results"][0]["table_name"] == "invoices"
     assert "invoice_amount" in result["retrieval_results"][0]["table_ddl"]
     assert "internal_note" not in result["retrieval_results"][0]["table_ddl"]

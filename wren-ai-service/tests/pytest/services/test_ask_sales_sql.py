@@ -1,4 +1,24 @@
-from src.web.v1.services.ask import AskService
+from src.web.v1.services.ask import AskRequest, AskService
+
+
+def test_ask_request_accepts_explicit_tables_setting():
+    request = AskRequest(
+        query="Show top failure names",
+        mdl_hash="mdl-1",
+        explicit_tables=["dbo_failure_patterns"],
+    )
+
+    assert request.explicit_tables == ["dbo_failure_patterns"]
+
+
+def test_normalize_explicit_table_names_adds_deployed_schema_candidate():
+    service = AskService.__new__(AskService)
+
+    assert service._normalize_explicit_table_names(["dbo.failure_patterns"]) == [
+        "dbo.failure_patterns",
+        "dbo_failure_patterns",
+        "failure_patterns",
+    ]
 
 
 def test_build_schema_grounded_sales_sql_for_salesperson_performance():
@@ -133,6 +153,14 @@ def test_extract_explicit_table_names_from_query():
     assert service._extract_explicit_table_names_from_query(
         "Show the first 10 rows from tblNewOrders"
     ) == ["tblNewOrders"]
+
+
+def test_extract_explicit_table_names_adds_deployed_schema_table_candidate():
+    service = AskService.__new__(AskService)
+
+    assert service._extract_explicit_table_names_from_query(
+        "Show monthly record count by created_at in dbo.failure_patterns."
+    ) == ["dbo.failure_patterns", "dbo_failure_patterns", "failure_patterns"]
 
 
 def test_build_schema_grounded_sales_sql_for_top_markets():
@@ -984,6 +1012,54 @@ def test_build_schema_grounded_table_question_sql_for_monthly_created_at_count()
     )
 
 
+def test_build_schema_grounded_table_question_sql_uses_any_temporal_column():
+    service = AskService.__new__(AskService)
+
+    sql = service._build_schema_grounded_table_question_sql(
+        "Show monthly record count for dbo.failure_patterns.",
+        [
+            """
+            CREATE TABLE dbo_failure_patterns (
+              id INTEGER,
+              name VARCHAR,
+              execution_date TIMESTAMP
+            );
+            """
+        ],
+    )
+
+    assert sql == (
+        'SELECT DATEPART(YEAR, "dbo_failure_patterns"."execution_date") AS "year", '
+        'DATEPART(MONTH, "dbo_failure_patterns"."execution_date") AS "month", '
+        'COUNT(*) AS "RecordCount" '
+        'FROM "dbo_failure_patterns" '
+        'WHERE "dbo_failure_patterns"."execution_date" IS NOT NULL '
+        'GROUP BY DATEPART(YEAR, "dbo_failure_patterns"."execution_date"), '
+        'DATEPART(MONTH, "dbo_failure_patterns"."execution_date") '
+        'ORDER BY DATEPART(YEAR, "dbo_failure_patterns"."execution_date") ASC, '
+        'DATEPART(MONTH, "dbo_failure_patterns"."execution_date") ASC'
+    )
+
+
+def test_build_schema_grounded_table_question_sql_rejects_time_question_without_temporal_column():
+    service = AskService.__new__(AskService)
+
+    assert (
+        service._build_schema_grounded_table_question_sql(
+            "Show monthly record count for dbo.failure_patterns.",
+            [
+                """
+                CREATE TABLE dbo_failure_patterns (
+                  id INTEGER,
+                  name VARCHAR
+                );
+                """
+            ],
+        )
+        is None
+    )
+
+
 def test_build_validated_ask_result_rejects_status_for_product_line_pcb_question():
     service = AskService.__new__(AskService)
 
@@ -1145,3 +1221,22 @@ def test_build_validated_ask_result_rejects_sql_when_schema_is_missing():
     )
 
     assert result is None
+
+
+def test_get_unqueryable_metric_message_rejects_turnaround_trend_without_temporal_column():
+    service = AskService.__new__(AskService)
+
+    message = service._get_unqueryable_metric_message(
+        "Generate a trend chart for average turnaround time by month.",
+        [
+            """
+            CREATE TABLE dbo_repair_logs (
+              status VARCHAR,
+              repair_cost DOUBLE
+            );
+            """
+        ],
+    )
+
+    assert message is not None
+    assert "temporal field" in message

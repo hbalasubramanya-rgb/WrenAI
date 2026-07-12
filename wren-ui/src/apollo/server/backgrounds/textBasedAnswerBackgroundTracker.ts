@@ -22,7 +22,7 @@ import { getLogger } from '@server/utils';
 const logger = getLogger('TextBasedAnswerBackgroundTracker');
 logger.level = 'debug';
 
-const ANSWER_PREVIEW_LIMIT = 200;
+const ANSWER_PREVIEW_LIMIT = 500;
 const EMPTY_RESULT_ANSWER =
   'The SQL query ran successfully, but it returned no rows for the current filters and datasource. Review the SQL or broaden the question if you expected matching records.';
 
