@@ -1176,6 +1176,10 @@ class AskService:
     def _build_schema_grounded_table_question_sql(
         self, query: str, table_ddls: list[str]
     ) -> str | None:
+        # Heuristic SQL skips semantic schema selection and can select a merely
+        # keyword-matching table. Let the scoped SQL-generation pipeline handle it.
+        return None
+
         normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
         if not normalized:
             return None
@@ -1286,6 +1290,10 @@ class AskService:
     def _build_explicit_table_preview_sql(
         self, query: str, table_ddls: list[str]
     ) -> tuple[str, str] | None:
+        # A preview cannot safely infer which fields the user needs. The scoped
+        # generator must choose the required columns instead of emitting SELECT *.
+        return None
+
         normalized_query = re.sub(r"\s+", " ", (query or "").strip())
         if not normalized_query:
             return None
@@ -3836,7 +3844,7 @@ class AskService:
                             tables=explicit_table_names,
                             project_id=ask_request.project_id,
                             histories=histories,
-                            enable_column_pruning=False,
+                            enable_column_pruning=True,
                         ),
                         timeout_seconds=min(
                             self._schema_retrieval_timeout_seconds,
@@ -3944,7 +3952,7 @@ class AskService:
                             query=user_query,
                             histories=histories,
                             project_id=ask_request.project_id,
-                            enable_column_pruning=False,
+                            enable_column_pruning=True,
                         ),
                     )
                     documents, table_names, table_ddls = (
@@ -4215,10 +4223,7 @@ class AskService:
                         tables=retrieval_table_names,
                         histories=histories,
                         project_id=ask_request.project_id,
-                        enable_column_pruning=(
-                            enable_column_pruning
-                            and not self._is_data_analysis_query(user_query)
-                        ),
+                        enable_column_pruning=True,
                     ),
                     timeout_seconds=self._schema_retrieval_timeout_seconds,
                 )
@@ -4246,7 +4251,7 @@ class AskService:
                                 tables=explicit_table_names,
                                 project_id=ask_request.project_id,
                                 histories=histories,
-                                enable_column_pruning=enable_column_pruning,
+                                enable_column_pruning=True,
                             ),
                             timeout_seconds=self._schema_retrieval_timeout_seconds,
                         )
@@ -4665,7 +4670,7 @@ class AskService:
                                     tables=table_names or retrieval_table_names,
                                     histories=histories,
                                     project_id=ask_request.project_id,
-                                    enable_column_pruning=enable_column_pruning,
+                                    enable_column_pruning=True,
                                 ),
                                 timeout_seconds=self._schema_retrieval_timeout_seconds,
                             )
