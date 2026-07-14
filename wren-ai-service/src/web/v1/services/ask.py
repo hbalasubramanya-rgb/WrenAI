@@ -11,7 +11,6 @@ from src.core.pipeline import BasicPipeline
 from src.pipelines.generation.utils.sql import (
     construct_valid_table_columns,
     construct_valid_table_names,
-    get_schema_intent_analysis_error,
     normalize_sql_column_references_to_schema,
     normalize_sql_table_references_to_schema,
 )
@@ -71,6 +70,142 @@ class AskResult(BaseModel):
 class AskError(BaseModel):
     code: Literal["NO_RELEVANT_DATA", "NO_RELEVANT_SQL", "OTHERS"]
     message: str
+
+
+def _semantic_analysis_items(
+    semantic_analysis: dict[str, Any] | None, key: str
+) -> list[str]:
+    if not isinstance(semantic_analysis, dict):
+        return []
+
+    value = semantic_analysis.get(key)
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, list):
+        return [
+            str(item).strip()
+            for item in value
+            if item is not None and str(item).strip()
+        ]
+    return []
+
+
+def _semantic_analysis_dict_items(
+    semantic_analysis: dict[str, Any] | None, key: str
+) -> list[dict[str, Any]]:
+    if not isinstance(semantic_analysis, dict):
+        return []
+
+    value = semantic_analysis.get(key)
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _has_semantic_analysis(semantic_analysis: dict[str, Any] | None) -> bool:
+    if not isinstance(semantic_analysis, dict) or not semantic_analysis:
+        return False
+
+    semantic_keys = {
+        "analytical_intent",
+        "entities",
+        "identifiers",
+        "metrics",
+        "dimensions",
+        "filters",
+        "aggregations",
+        "relationships",
+        "time_constraints",
+        "ranking",
+        "supported_schema_objects",
+        "concept_mappings",
+        "interpretations",
+        "missing_requirements",
+        "ambiguous_requirements",
+        "support_reasoning",
+    }
+    return any(semantic_analysis.get(key) for key in semantic_keys)
+
+
+def _schema_interpretation_clarification_error(
+    semantic_analysis: dict[str, Any],
+) -> str | None:
+    interpretations = _semantic_analysis_dict_items(
+        semantic_analysis, "interpretations"
+    )
+    if not interpretations:
+        return None
+
+    selected_interpretations = [
+        str(interpretation.get("description") or "").strip()
+        for interpretation in interpretations
+        if interpretation.get("is_selected") is True
+        and str(interpretation.get("description") or "").strip()
+    ]
+    if len(selected_interpretations) > 1:
+        return (
+            "The request has multiple selected schema interpretations: "
+            f"{', '.join(selected_interpretations)}. Please clarify which one to use."
+        )
+
+    clarification_interpretations = [
+        str(interpretation.get("description") or "").strip()
+        for interpretation in interpretations
+        if interpretation.get("needs_clarification") is True
+        and str(interpretation.get("description") or "").strip()
+    ]
+    if clarification_interpretations:
+        return (
+            "The request needs clarification before SQL generation: "
+            f"{', '.join(clarification_interpretations)}."
+        )
+
+    return None
+
+
+def get_schema_intent_analysis_error(
+    semantic_analysis: dict[str, Any] | None,
+) -> str | None:
+    if not _has_semantic_analysis(semantic_analysis):
+        return None
+
+    missing_requirements = _semantic_analysis_items(
+        semantic_analysis, "missing_requirements"
+    )
+    if missing_requirements:
+        return (
+            "The active datasource schema does not expose the information needed "
+            "to answer the request: "
+            f"{', '.join(missing_requirements)}. I cannot generate unrelated SQL."
+        )
+
+    ambiguous_requirements = _semantic_analysis_items(
+        semantic_analysis, "ambiguous_requirements"
+    )
+    if ambiguous_requirements:
+        return (
+            "The request has multiple equally plausible schema interpretations: "
+            f"{', '.join(ambiguous_requirements)}. Please clarify which one to use."
+        )
+
+    if interpretation_error := _schema_interpretation_clarification_error(
+        semantic_analysis
+    ):
+        return interpretation_error
+
+    if semantic_analysis.get("is_fully_supported") is False:
+        support_reasoning = str(semantic_analysis.get("support_reasoning") or "").strip()
+        if support_reasoning:
+            return (
+                "The selected schema does not fully support the request: "
+                f"{support_reasoning}"
+            )
+        return (
+            "The selected schema does not fully support every required component "
+            "of the request. I cannot generate unrelated SQL."
+        )
+
+    return None
 
 
 class AskResultRequest(BaseModel):
