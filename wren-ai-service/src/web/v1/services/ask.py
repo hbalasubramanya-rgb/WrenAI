@@ -414,6 +414,10 @@ class AskService:
             "compare",
             "count",
             "cost",
+            "countries",
+            "country",
+            "currencies",
+            "currency",
             "customer",
             "customers",
             "dashboard",
@@ -432,6 +436,8 @@ class AskService:
             "pcb",
             "performance",
             "profit",
+            "product",
+            "products",
             "quarter",
             "quantity",
             "rank",
@@ -445,6 +451,8 @@ class AskService:
             "sales rep",
             "salesperson",
             "sla",
+            "sold",
+            "selling",
             "top",
             "trend",
             "turnaround",
@@ -1371,11 +1379,16 @@ class AskService:
         wants_latest_records = any(
             term in normalized
             for term in ("latest", "recent", "newest", "last records", "latest records")
+        ) or bool(
+            re.search(
+                r"\blast\s+\d+\s+(?:orders?|records?|rows?|invoices?|transactions?)\b",
+                normalized,
+            )
         )
         if wants_latest_records:
             date_column = self._find_temporal_column_for_query(query, table)
             if not date_column:
-                return None
+                return f"SELECT TOP {limit} * FROM {table_ref}"
             date_ref = column_ref(date_column)
             return (
                 f"SELECT TOP {limit} * "
@@ -1414,6 +1427,206 @@ class AskService:
         )
         if wants_total_count:
             return f'SELECT COUNT(*) AS "RecordCount" FROM {table_ref}'
+
+        def first_schema_column(candidates: tuple[str, ...]) -> str | None:
+            return self._find_schema_column(table, candidates)
+
+        def first_numeric_schema_column(candidates: tuple[str, ...]) -> str | None:
+            return self._find_schema_column(table, candidates, numeric=True)
+
+        def dimension_column_for_query() -> str | None:
+            if re.search(r"\b(?:customer|customers|client|clients)\b", normalized):
+                return first_schema_column(
+                    (
+                        "Customer",
+                        "CustomerName",
+                        "CustName",
+                        "CustNo",
+                        "CustomerNo",
+                        "CustomerId",
+                        "CustId",
+                        "Client",
+                        "ClientName",
+                        "Account",
+                        "AccountName",
+                    )
+                )
+            if re.search(r"\b(?:product|products|item|items|sku)\b", normalized):
+                return first_schema_column(
+                    (
+                        "Product",
+                        "ProductName",
+                        "ProdName",
+                        "ProdCode",
+                        "Item",
+                        "ItemName",
+                        "ItemNo",
+                        "SKU",
+                        "Material",
+                        "PartNo",
+                        "Description",
+                    )
+                )
+            if re.search(r"\b(?:country|countries)\b", normalized):
+                return first_schema_column(
+                    (
+                        "Country",
+                        "CountryCode",
+                        "CountryName",
+                        "Nation",
+                        "ShipCountry",
+                        "BillCountry",
+                    )
+                )
+            if re.search(r"\b(?:currency|currencies|ccy)\b", normalized):
+                return first_schema_column(
+                    (
+                        "Currency",
+                        "CurrencyCode",
+                        "Curr",
+                        "CurrCode",
+                        "Ccy",
+                        "CCY",
+                    )
+                )
+            if "market" in normalized:
+                return first_schema_column(("Market", "Region"))
+            return self._find_dimension_column_for_query(query, table)
+
+        def metric_column_for_query() -> tuple[str | None, str, str]:
+            if "average" in normalized or re.search(r"\bavg\b", normalized):
+                aggregate = "AVG"
+                alias_prefix = "Average"
+            else:
+                aggregate = "SUM"
+                alias_prefix = "Total"
+
+            if re.search(r"\b(?:order|orders)\b", normalized) and re.search(
+                r"\b(?:amount|amounts|value|values|total|totals)\b", normalized
+            ):
+                return (
+                    first_numeric_schema_column(
+                        (
+                            "OrderValue",
+                            "OrderAmount",
+                            "OrderTotal",
+                            "OrdValue",
+                            "OrdAmount",
+                            "Amount",
+                            "NetAmount",
+                            "GrossAmount",
+                            "Value",
+                            "NetValue",
+                            "GrossValue",
+                            "Total",
+                            "TotalAmount",
+                        )
+                    ),
+                    aggregate,
+                    f"{alias_prefix}OrderValue",
+                )
+
+            if re.search(r"\b(?:invoice|invoices)\b", normalized) and re.search(
+                r"\b(?:amount|amounts|value|values|total|totals)\b", normalized
+            ):
+                return (
+                    first_numeric_schema_column(
+                        (
+                            "InvoiceAmount",
+                            "InvAmount",
+                            "InvoiceValue",
+                            "InvValue",
+                            "Amount",
+                            "NetAmount",
+                            "GrossAmount",
+                            "ExtAmount",
+                            "ExtendedAmount",
+                            "LineValue",
+                            "TotalAmount",
+                            "InvoiceTotal",
+                            "SalesValue",
+                        )
+                    ),
+                    aggregate,
+                    f"{alias_prefix}InvoiceAmount",
+                )
+
+            if re.search(
+                r"\b(?:quantity|qty|sold|selling|top-selling|top selling)\b",
+                normalized,
+            ):
+                return (
+                    first_numeric_schema_column(
+                        (
+                            "Quantity",
+                            "Qty",
+                            "SalesQty",
+                            "SalesQuantity",
+                            "InvoiceQuantity",
+                            "OrderQty",
+                            "OrderedQty",
+                            "OrderQuantity",
+                            "QtyOrdered",
+                            "SoldQty",
+                            "InvoicedQty",
+                            "ShippedQty",
+                            "Units",
+                        )
+                    ),
+                    aggregate,
+                    f"{alias_prefix}Quantity",
+                )
+
+            if re.search(
+                r"\b(?:sales?|revenue|value|values|amount|amounts)\b",
+                normalized,
+            ):
+                return (
+                    first_numeric_schema_column(
+                        (
+                            "SalesValue",
+                            "SalesAmount",
+                            "Sales",
+                            "Revenue",
+                            "Amount",
+                            "NetAmount",
+                            "GrossAmount",
+                            "Value",
+                            "NetValue",
+                            "GrossValue",
+                            "Total",
+                            "TotalAmount",
+                            "Price",
+                        )
+                    ),
+                    aggregate,
+                    f"{alias_prefix}Sales",
+                )
+
+            return (None, aggregate, f"{alias_prefix}Value")
+
+        asks_grouped_metric = bool(
+            re.search(
+                r"\b(?:top|by|per|each|across|between|total|sum|average|avg|selling|sold)\b",
+                normalized,
+            )
+        )
+        if asks_grouped_metric:
+            dimension_column = dimension_column_for_query()
+            metric_column, aggregate, alias = metric_column_for_query()
+            if dimension_column and metric_column:
+                dimension_ref = column_ref(dimension_column)
+                metric_ref = column_ref(metric_column)
+                top_clause = f"TOP {limit} " if "top" in normalized else ""
+                return (
+                    f"SELECT {top_clause}{dimension_ref} AS "
+                    f"{self._quote_sql_identifier(dimension_column)}, "
+                    f"{aggregate}({metric_ref}) AS {self._quote_sql_identifier(alias)} "
+                    f"FROM {table_ref} "
+                    f"WHERE {dimension_ref} IS NOT NULL "
+                    f"GROUP BY {dimension_ref} "
+                    f"ORDER BY {aggregate}({metric_ref}) DESC"
+                )
 
         if re.search(r"\b(?:sales?|revenue)\b", normalized):
             if not re.search(r"\bsales\s*person\b|\bsalesperson\b", normalized):
@@ -1471,7 +1684,10 @@ class AskService:
             )
         )
         if wants_distribution:
-            dimension_column = self._find_dimension_column_for_query(query, table)
+            dimension_column = (
+                dimension_column_for_query()
+                or self._find_dimension_column_for_query(query, table)
+            )
             if not dimension_column:
                 return None
             dimension_ref = column_ref(dimension_column)
@@ -2458,6 +2674,8 @@ class AskService:
         if match := re.search(
             r"\b(?:first|limit)\s+(\d+)\b", query or "", flags=re.IGNORECASE
         ):
+            return max(1, min(int(match.group(1)), 100))
+        if match := re.search(r"\blast\s+(\d+)\b", query or "", flags=re.IGNORECASE):
             return max(1, min(int(match.group(1)), 100))
         if match := re.search(r"\b(\d+)\s+rows?\b", query or "", flags=re.IGNORECASE):
             return max(1, min(int(match.group(1)), 100))
@@ -4208,19 +4426,21 @@ class AskService:
                     # Only user instructions are kept. Prior SQL samples are not
                     # reused for fresh questions because they can bias the model
                     # toward stale or unrelated queries.
-                    instructions_task = await self._run_with_timeout(
-                        "Instruction retrieval",
-                        self._pipelines["instructions_retrieval"].run(
-                            query=user_query,
-                            project_id=ask_request.project_id,
-                            scope="sql",
-                        ),
-                    )
-
                     sql_samples = []
-                    instructions = instructions_task["formatted_output"].get(
-                        "documents", []
-                    )
+                    if force_text_to_sql:
+                        instructions = []
+                    else:
+                        instructions_task = await self._run_with_timeout(
+                            "Instruction retrieval",
+                            self._pipelines["instructions_retrieval"].run(
+                                query=user_query,
+                                project_id=ask_request.project_id,
+                                scope="sql",
+                            ),
+                        )
+                        instructions = instructions_task["formatted_output"].get(
+                            "documents", []
+                        )
 
                     if self._allow_intent_classification and not force_text_to_sql:
                         try:

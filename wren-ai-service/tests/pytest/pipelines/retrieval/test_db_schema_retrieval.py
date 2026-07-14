@@ -7,6 +7,7 @@ from src.pipelines.retrieval.db_schema_retrieval import (
     check_using_db_schemas_without_pruning,
     dbschema_retrieval,
     expand_business_terms_for_retrieval,
+    table_retrieval,
 )
 
 
@@ -133,6 +134,27 @@ async def test_dbschema_retrieval_uses_explicit_tables_without_embedding_results
             },
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_table_retrieval_skips_vector_lookup_for_explicit_tables():
+    class Retriever:
+        async def run(self, query_embedding, filters):
+            raise AssertionError("explicit table lookup must not call vector retrieval")
+
+    result = await table_retrieval(
+        query="Show monthly record count by LiquidationDate in dbo.ytblTariffsRec",
+        embedding={},
+        project_id="project-1",
+        tables=["dbo.ytblTariffsRec", "dbo_ytblTariffsRec", "ytblTariffsRec"],
+        table_retriever=Retriever(),
+    )
+
+    assert [document.meta["name"] for document in result["documents"]] == [
+        "dbo.ytblTariffsRec",
+        "dbo_ytblTariffsRec",
+        "ytblTariffsRec",
+    ]
 
 
 def test_construct_retrieval_results_preserves_semantic_analysis():

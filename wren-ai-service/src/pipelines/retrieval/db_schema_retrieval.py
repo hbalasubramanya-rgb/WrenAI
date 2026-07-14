@@ -33,7 +33,7 @@ else:
 logger = logging.getLogger("wren-ai-service")
 
 MAX_RELEVANT_TABLE_CANDIDATES = 8
-MIN_TABLE_DESCRIPTION_CANDIDATE_WINDOW = 50
+MIN_TABLE_DESCRIPTION_CANDIDATE_WINDOW = 10
 
 
 table_columns_selection_system_prompt = """
@@ -283,6 +283,14 @@ def _query_concept_groups(query: str) -> list[set[str]]:
             {"order", "orders", "ord", "ordno", "orderid", "purchase"},
         ),
         (
+            {"product", "products", "item", "items", "sku"},
+            {"product", "products", "prod", "item", "items", "sku", "material"},
+        ),
+        (
+            {"quantity", "qty", "sold", "selling", "topselling"},
+            {"quantity", "qty", "salesqty", "salesquantity", "units", "sold"},
+        ),
+        (
             {"month", "monthly", "year", "quarter", "trend", "date"},
             {"date", "time", "timestamp", "month", "year", "quarter", "period"},
         ),
@@ -415,15 +423,16 @@ async def table_retrieval(
     if not tables:
         return {"documents": []}
 
-    base_filters["conditions"].append(
-        {"field": "name", "operator": "in", "value": tables}
-    )
-
-    result = await table_retriever.run(
-        query_embedding=[],
-        filters=base_filters,
-    )
-    return result
+    # Exact table-name requests should not wait on semantic table-description
+    # retrieval. The downstream schema retriever can load deployed TABLE_SCHEMA
+    # documents directly by these names.
+    return {
+        "documents": [
+            Document(content=str({"name": table}), meta={"name": table})
+            for table in tables
+            if isinstance(table, str) and table.strip()
+        ]
+    }
 
 
 def _extract_table_names_from_table_retrieval(

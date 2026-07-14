@@ -1039,6 +1039,182 @@ def test_build_schema_grounded_table_question_sql_for_latest_records_by_created_
     )
 
 
+def test_build_schema_grounded_table_question_sql_for_last_orders():
+    service = AskService.__new__(AskService)
+
+    sql = service._build_schema_grounded_table_question_sql(
+        "show last 10 orders",
+        [
+            """
+            CREATE TABLE dbo_tblOrders (
+              OrdNo VARCHAR,
+              CustomerName VARCHAR,
+              OrdDate TIMESTAMP
+            );
+            """
+        ],
+    )
+
+    assert sql == (
+        'SELECT TOP 10 * FROM "dbo_tblOrders" '
+        'WHERE "dbo_tblOrders"."OrdDate" IS NOT NULL '
+        'ORDER BY "dbo_tblOrders"."OrdDate" DESC'
+    )
+
+
+def test_build_schema_grounded_table_question_sql_for_last_orders_uses_requested_limit():
+    service = AskService.__new__(AskService)
+
+    sql = service._build_schema_grounded_table_question_sql(
+        "show last 25 orders",
+        [
+            """
+            CREATE TABLE dbo_tblOrders (
+              OrdNo VARCHAR,
+              CustomerName VARCHAR,
+              OrdDate TIMESTAMP
+            );
+            """
+        ],
+    )
+
+    assert sql == (
+        'SELECT TOP 25 * FROM "dbo_tblOrders" '
+        'WHERE "dbo_tblOrders"."OrdDate" IS NOT NULL '
+        'ORDER BY "dbo_tblOrders"."OrdDate" DESC'
+    )
+
+
+def test_build_schema_grounded_table_question_sql_for_top_customers_by_invoice_amount():
+    service = AskService.__new__(AskService)
+
+    sql = service._build_schema_grounded_table_question_sql(
+        "Show top 10 customers by invoice amount.",
+        [
+            """
+            CREATE TABLE dbo_tblInvoices (
+              CustomerName VARCHAR,
+              InvoiceAmount DECIMAL,
+              InvoiceDate TIMESTAMP
+            );
+            """
+        ],
+    )
+
+    assert sql == (
+        'SELECT TOP 10 "dbo_tblInvoices"."CustomerName" AS "CustomerName", '
+        'SUM("dbo_tblInvoices"."InvoiceAmount") AS "TotalInvoiceAmount" '
+        'FROM "dbo_tblInvoices" '
+        'WHERE "dbo_tblInvoices"."CustomerName" IS NOT NULL '
+        'GROUP BY "dbo_tblInvoices"."CustomerName" '
+        'ORDER BY SUM("dbo_tblInvoices"."InvoiceAmount") DESC'
+    )
+
+
+def test_build_schema_grounded_table_question_sql_for_average_order_value_by_country():
+    service = AskService.__new__(AskService)
+
+    sql = service._build_schema_grounded_table_question_sql(
+        "Compare average order values across countries.",
+        [
+            """
+            CREATE TABLE dbo_tblOrders (
+              CountryCode VARCHAR,
+              OrderValue DECIMAL,
+              OrdDate TIMESTAMP
+            );
+            """
+        ],
+    )
+
+    assert sql == (
+        'SELECT "dbo_tblOrders"."CountryCode" AS "CountryCode", '
+        'AVG("dbo_tblOrders"."OrderValue") AS "AverageOrderValue" '
+        'FROM "dbo_tblOrders" '
+        'WHERE "dbo_tblOrders"."CountryCode" IS NOT NULL '
+        'GROUP BY "dbo_tblOrders"."CountryCode" '
+        'ORDER BY AVG("dbo_tblOrders"."OrderValue") DESC'
+    )
+
+
+def test_build_schema_grounded_table_question_sql_for_quantity_sold_by_product():
+    service = AskService.__new__(AskService)
+
+    sql = service._build_schema_grounded_table_question_sql(
+        "Show total quantity sold by product.",
+        [
+            """
+            CREATE TABLE dbo_tblSales (
+              ProductName VARCHAR,
+              Qty INTEGER,
+              InvoiceDate TIMESTAMP
+            );
+            """
+        ],
+    )
+
+    assert sql == (
+        'SELECT "dbo_tblSales"."ProductName" AS "ProductName", '
+        'SUM("dbo_tblSales"."Qty") AS "TotalQuantity" '
+        'FROM "dbo_tblSales" '
+        'WHERE "dbo_tblSales"."ProductName" IS NOT NULL '
+        'GROUP BY "dbo_tblSales"."ProductName" '
+        'ORDER BY SUM("dbo_tblSales"."Qty") DESC'
+    )
+
+
+def test_build_schema_grounded_table_question_sql_for_top_selling_products():
+    service = AskService.__new__(AskService)
+
+    sql = service._build_schema_grounded_table_question_sql(
+        "Show top-selling products.",
+        [
+            """
+            CREATE TABLE dbo_tblSales (
+              ProdName VARCHAR,
+              SalesQuantity INTEGER,
+              InvoiceDate TIMESTAMP
+            );
+            """
+        ],
+    )
+
+    assert sql == (
+        'SELECT TOP 10 "dbo_tblSales"."ProdName" AS "ProdName", '
+        'SUM("dbo_tblSales"."SalesQuantity") AS "TotalQuantity" '
+        'FROM "dbo_tblSales" '
+        'WHERE "dbo_tblSales"."ProdName" IS NOT NULL '
+        'GROUP BY "dbo_tblSales"."ProdName" '
+        'ORDER BY SUM("dbo_tblSales"."SalesQuantity") DESC'
+    )
+
+
+def test_build_schema_grounded_table_question_sql_for_invoice_distribution_by_currency():
+    service = AskService.__new__(AskService)
+
+    sql = service._build_schema_grounded_table_question_sql(
+        "Show invoice distribution by currency.",
+        [
+            """
+            CREATE TABLE dbo_tblInvoices (
+              InvoiceNo VARCHAR,
+              CurrCode VARCHAR,
+              InvoiceAmount DECIMAL
+            );
+            """
+        ],
+    )
+
+    assert sql == (
+        'SELECT TOP 10 "dbo_tblInvoices"."CurrCode" AS "CurrCode", '
+        'COUNT(*) AS "RecordCount" '
+        'FROM "dbo_tblInvoices" '
+        'WHERE "dbo_tblInvoices"."CurrCode" IS NOT NULL '
+        'GROUP BY "dbo_tblInvoices"."CurrCode" '
+        'ORDER BY COUNT(*) DESC'
+    )
+
+
 def test_build_schema_grounded_table_question_sql_for_monthly_created_at_count():
     service = AskService.__new__(AskService)
 
