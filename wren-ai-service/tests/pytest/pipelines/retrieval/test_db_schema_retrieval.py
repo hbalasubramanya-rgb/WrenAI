@@ -1,8 +1,10 @@
 import pytest
+import tiktoken
 from haystack import Document
 
 from src.pipelines.retrieval.db_schema_retrieval import (
     construct_retrieval_results,
+    check_using_db_schemas_without_pruning,
     dbschema_retrieval,
     expand_business_terms_for_retrieval,
 )
@@ -223,3 +225,90 @@ def test_construct_retrieval_results_preserves_semantic_analysis():
     assert result["retrieval_results"][0]["table_name"] == "invoices"
     assert "invoice_amount" in result["retrieval_results"][0]["table_ddl"]
     assert "internal_note" not in result["retrieval_results"][0]["table_ddl"]
+
+
+def test_explicit_table_retrieval_uses_full_schema_when_it_fits_context():
+    result = check_using_db_schemas_without_pruning(
+        construct_db_schemas=[
+            {
+                "type": "TABLE",
+                "name": "dbo_tblNewOrders",
+                "comment": "",
+                "columns": [
+                    {
+                        "type": "COLUMN",
+                        "name": "CustName",
+                        "data_type": "varchar",
+                        "comment": "",
+                        "is_primary_key": False,
+                    }
+                ],
+            }
+        ],
+        dbschema_retrieval=[],
+        encoding=tiktoken.get_encoding("cl100k_base"),
+        enable_column_pruning=True,
+        context_window_size=8000,
+        tables=["dbo_tblNewOrders"],
+    )
+
+    assert result["db_schemas"][0]["table_name"] == "dbo_tblNewOrders"
+    assert "CustName" in result["db_schemas"][0]["table_ddl"]
+
+
+def test_construct_retrieval_results_marks_missing_sales_country_concepts():
+    result = construct_retrieval_results(
+        check_using_db_schemas_without_pruning={
+            "db_schemas": [
+                {
+                    "table_name": "dbo_ytblTariffsFullA",
+                    "table_ddl": """
+                    CREATE TABLE dbo_ytblTariffsFullA (
+                      TariffCode VARCHAR,
+                      LiquidationDate DATE
+                    );
+                    """,
+                }
+            ],
+            "has_calculated_field": False,
+            "has_metric": False,
+            "has_json_field": False,
+            "semantic_analysis": {},
+        },
+        filter_columns_in_tables={},
+        construct_db_schemas=[],
+        dbschema_retrieval=[],
+        query="compare sales between countries",
+    )
+
+    assert result["semantic_analysis"]["is_fully_supported"] is False
+    assert "sales or revenue metric" in result["semantic_analysis"]["missing_requirements"]
+    assert "country dimension" in result["semantic_analysis"]["missing_requirements"]
+
+
+def test_construct_retrieval_results_accepts_compound_sales_country_columns():
+    result = construct_retrieval_results(
+        check_using_db_schemas_without_pruning={
+            "db_schemas": [
+                {
+                    "table_name": "dbo_tblSales",
+                    "table_ddl": """
+                    CREATE TABLE dbo_tblSales (
+                      CountryCode VARCHAR,
+                      SalesValue DECIMAL
+                    );
+                    """,
+                }
+            ],
+            "has_calculated_field": False,
+            "has_metric": False,
+            "has_json_field": False,
+            "semantic_analysis": {},
+        },
+        filter_columns_in_tables={},
+        construct_db_schemas=[],
+        dbschema_retrieval=[],
+        query="compare sales between countries",
+    )
+
+    assert result["semantic_analysis"] == {}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import re
 import sys
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -31,17 +32,20 @@ else:
 
 logger = logging.getLogger("wren-ai-service")
 
+MAX_RELEVANT_TABLE_CANDIDATES = 8
+MIN_TABLE_DESCRIPTION_CANDIDATE_WINDOW = 50
+
 
 table_columns_selection_system_prompt = """
 ### TASK ###
-You are a highly skilled data analyst. Your goal is to examine the provided active deployed database schema, interpret the posed question, and identify the specific tables, columns, metrics, views, and relationships required to construct an accurate SQL query.
+You are a highly skilled data analyst. Your goal is to examine the retrieved candidate database schema, interpret the posed question, and identify the specific tables, columns, metrics, views, and relationships required to construct an accurate SQL query.
 
-The database schema includes tables, columns, primary keys, foreign keys, relationships, and any relevant constraints.
+The retrieved schema is a candidate set, not the full datasource. Select only the objects needed by the question. Objects not shown here are unavailable to this SQL generation request.
 
 ### INSTRUCTIONS ###
 1. First perform a semantic analysis of the user's request. Identify intended business entities, identifiers, descriptive attributes, metrics, dimensions, filters, aggregations, relationships, time constraints, ranking requirements, and analytical intent such as retrieval, detailed records, summary, comparison, trend analysis, dashboard, KPI, ranking, or record count.
 2. Map each business term to explicit schema objects only when the active schema directly supports that term. Distinguish entities such as customer/order/invoice/product from identifiers such as order ID or invoice number, descriptive attributes, and measurable metrics such as amount, quantity, cost, profit, revenue, or duration.
-3. Select tables and columns by semantic fit to the full request, not by isolated keyword overlap or commonly used default tables.
+3. Select tables and columns by semantic fit to the full request, not by isolated keyword overlap or commonly used default tables. Return only a subset of the retrieved candidates; never introduce a table or column that is not shown.
 4. Include join keys and relationship columns needed to connect selected tables. Do not invent relationships or foreign keys.
 5. If the schema does not support a requested entity, metric, dimension, filter, time range, aggregation, or ranking requirement, record it in `missing_requirements`.
 6. If multiple schema interpretations are equally plausible and the question does not disambiguate them, record them in `ambiguous_requirements`.
@@ -177,6 +181,182 @@ def expand_business_terms_for_retrieval(query: str) -> str:
     return query
 
 
+def _normalize_retrieval_token(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _retrieval_terms(value: Any) -> set[str]:
+    stop_words = {
+        "about",
+        "and",
+        "are",
+        "ask",
+        "between",
+        "by",
+        "chart",
+        "compare",
+        "distribution",
+        "for",
+        "from",
+        "how",
+        "in",
+        "is",
+        "me",
+        "of",
+        "show",
+        "the",
+        "to",
+        "what",
+        "which",
+        "with",
+    }
+    terms: set[str] = set()
+    for raw_token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(value or "")):
+        split_token = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", raw_token)
+        for token in re.findall(r"[A-Za-z0-9]+", split_token):
+            normalized = _normalize_retrieval_token(token)
+            if len(normalized) <= 2 and normalized not in {"bu"}:
+                continue
+            if normalized in stop_words:
+                continue
+            terms.add(normalized)
+            if normalized.endswith("ies") and len(normalized) > 4:
+                terms.add(normalized[:-3] + "y")
+            elif normalized.endswith("s") and len(normalized) > 3:
+                terms.add(normalized[:-1])
+    return terms
+
+
+def _source_text(document: Document) -> str:
+    content_text = document.content or ""
+    try:
+        parsed = ast.literal_eval(content_text)
+    except (ValueError, SyntaxError):
+        parsed = None
+
+    if isinstance(parsed, dict):
+        content_text = " ".join(
+            str(part or "")
+            for part in (
+                parsed.get("name"),
+                parsed.get("description"),
+                parsed.get("columns"),
+                parsed.get("properties"),
+            )
+        )
+
+    return " ".join(
+        str(part or "")
+        for part in (
+            document.meta.get("name"),
+            document.meta.get("description"),
+            content_text,
+        )
+    )
+
+
+def _query_concept_groups(query: str) -> list[set[str]]:
+    query_terms = _retrieval_terms(query)
+    concept_specs: list[tuple[set[str], set[str]]] = [
+        (
+            {"sale", "sales", "revenue"},
+            {"sale", "sales", "revenue", "amount", "value", "total", "price"},
+        ),
+        (
+            {"invoice", "invoices", "billing"},
+            {"invoice", "invoices", "inv", "billing", "bill"},
+        ),
+        (
+            {"currency", "currencies"},
+            {"currency", "currencies", "curr", "ccy", "fx"},
+        ),
+        (
+            {"country", "countries"},
+            {"country", "countries", "nation"},
+        ),
+        (
+            {"customer", "customers"},
+            {"customer", "customers", "cust", "client", "account"},
+        ),
+        (
+            {"order", "orders"},
+            {"order", "orders", "ord", "ordno", "orderid", "purchase"},
+        ),
+        (
+            {"month", "monthly", "year", "quarter", "trend", "date"},
+            {"date", "time", "timestamp", "month", "year", "quarter", "period"},
+        ),
+    ]
+
+    return [aliases for triggers, aliases in concept_specs if query_terms & triggers]
+
+
+def _semantic_score(document: Document) -> float:
+    score = getattr(document, "score", None)
+    if isinstance(score, (int, float)):
+        return float(score)
+    meta_score = document.meta.get("score")
+    if isinstance(meta_score, (int, float)):
+        return float(meta_score)
+    return 0.0
+
+
+def _score_table_document(query: str, document: Document, index: int) -> tuple[float, int, Document]:
+    query_terms = _retrieval_terms(query)
+    source_terms = _retrieval_terms(_source_text(document))
+    if not query_terms or not source_terms:
+        return (_semantic_score(document), -index, document)
+
+    lexical_score = 0
+    for query_term in query_terms:
+        if query_term in source_terms:
+            lexical_score += 20
+            continue
+        if any(
+            query_term in source_term or source_term in query_term
+            for source_term in source_terms
+        ):
+            lexical_score += 6
+
+    concept_groups = _query_concept_groups(query)
+    if concept_groups:
+        covered = sum(1 for group in concept_groups if group & source_terms)
+        lexical_score += 25 * covered
+        if covered == len(concept_groups):
+            lexical_score += 35
+        elif covered == 0:
+            lexical_score -= 35
+
+    return (_semantic_score(document) + lexical_score, -index, document)
+
+
+def _rerank_table_documents(
+    query: str,
+    documents: list[Document],
+    *,
+    max_tables: int = MAX_RELEVANT_TABLE_CANDIDATES,
+) -> list[Document]:
+    if not documents:
+        return []
+
+    scored = sorted(
+        (
+            _score_table_document(query, document, index)
+            for index, document in enumerate(documents)
+        ),
+        key=lambda item: (item[0], item[1]),
+        reverse=True,
+    )
+    selected = [document for _score, _index, document in scored[:max_tables]]
+    logger.info(
+        "Scoped table-description candidates from %s to %s: %s",
+        len(documents),
+        len(selected),
+        [document.meta.get("name") for document in selected],
+    )
+    return selected
+
+
 @observe(capture_input=False, capture_output=False)
 async def embedding(
     query: str,
@@ -204,7 +384,11 @@ async def embedding(
 
 @observe(capture_input=False)
 async def table_retrieval(
-    embedding: dict, project_id: str, tables: Optional[list[str]], table_retriever: Any
+    query: str,
+    embedding: dict,
+    project_id: str,
+    tables: Optional[list[str]],
+    table_retriever: Any,
 ) -> dict:
     base_filters = {
         "operator": "AND",
@@ -222,6 +406,9 @@ async def table_retrieval(
         result = await table_retriever.run(
             query_embedding=embedding.get("embedding"),
             filters=base_filters,
+        )
+        result["documents"] = _rerank_table_documents(
+            query, result.get("documents") or []
         )
         return result
 
@@ -336,6 +523,128 @@ def construct_db_schemas(dbschema_retrieval: list[Document]) -> list[dict]:
 
     return list(db_schemas.values())
 
+_FOREIGN_KEY_CONSTRAINT_PATTERN = re.compile(
+    r"FOREIGN\s+KEY\s*\(\s*(?P<column>[^)]+?)\s*\)\s*"
+    r"REFERENCES\s+(?P<table>[^\s(]+)\s*\(\s*(?P<referenced_column>[^)]+?)\s*\)",
+    flags=re.IGNORECASE,
+)
+
+
+def _normalize_schema_identifier(value: Any) -> str:
+    return str(value or "").strip().strip('"[]').replace(chr(96), "").lower()
+
+
+def _schema_table_names_match(left: Any, right: Any) -> bool:
+    left_name = _normalize_schema_identifier(left)
+    right_name = _normalize_schema_identifier(right)
+    if not left_name or not right_name:
+        return False
+    return left_name == right_name or left_name.rsplit(".", 1)[-1] == right_name.rsplit(
+        ".", 1
+    )[-1]
+
+
+def _find_selected_schema_table(
+    table_name: Any, selected_tables: set[str]
+) -> str | None:
+    for selected_table in selected_tables:
+        if _schema_table_names_match(table_name, selected_table):
+            return selected_table
+    return None
+
+
+def _parse_foreign_key_constraint(column: dict) -> tuple[str, str, str] | None:
+    constraint = str(column.get("constraint") or "")
+    match = _FOREIGN_KEY_CONSTRAINT_PATTERN.search(constraint)
+    if not match:
+        return None
+
+    local_column = str(match.group("column")).strip().strip('"[]').replace(chr(96), "")
+    referenced_table = str(match.group("table")).strip().strip('"[]').replace(chr(96), "")
+    referenced_column = str(match.group("referenced_column")).strip().strip('"[]').replace(chr(96), "")
+    if not local_column or not referenced_table or not referenced_column:
+        return None
+    return local_column, referenced_table, referenced_column
+
+
+def _selected_columns_from_retrieval(
+    columns_and_tables_needed: list[dict], construct_db_schemas: list[dict]
+) -> dict[str, set[str]]:
+    selected_by_name: dict[str, dict] = {}
+    for selected_table in columns_and_tables_needed:
+        if not isinstance(selected_table, dict):
+            continue
+        table_name = _normalize_schema_identifier(selected_table.get("table_name"))
+        table_contents = selected_table.get("table_contents")
+        if table_name and isinstance(table_contents, dict):
+            selected_by_name[table_name] = table_contents
+
+    selected_columns: dict[str, set[str]] = {}
+    for table_schema in construct_db_schemas:
+        table_name = str(table_schema.get("name") or "").strip()
+        table_contents = selected_by_name.get(_normalize_schema_identifier(table_name))
+        if not table_name or not table_contents:
+            continue
+
+        available_columns = {
+            _normalize_schema_identifier(column.get("name")): str(column.get("name"))
+            for column in table_schema.get("columns", [])
+            if isinstance(column, dict)
+            and column.get("type") == "COLUMN"
+            and str(column.get("name") or "").strip()
+        }
+        requested_columns = table_contents.get("columns")
+        if not isinstance(requested_columns, list):
+            continue
+
+        columns = {
+            available_columns[_normalize_schema_identifier(column)]
+            for column in requested_columns
+            if _normalize_schema_identifier(column) in available_columns
+        }
+        if columns:
+            selected_columns[table_name] = columns
+
+    return selected_columns
+
+
+def _include_selected_relationship_columns(
+    selected_columns: dict[str, set[str]], construct_db_schemas: list[dict]
+) -> None:
+    selected_tables = set(selected_columns)
+    schema_by_name = {
+        str(table_schema.get("name") or "").strip(): table_schema
+        for table_schema in construct_db_schemas
+        if str(table_schema.get("name") or "").strip()
+    }
+
+    for table_name, table_schema in schema_by_name.items():
+        if table_name not in selected_tables:
+            continue
+
+        for column in table_schema.get("columns", []):
+            if not isinstance(column, dict) or column.get("type") != "FOREIGN_KEY":
+                continue
+            relationship_tables = column.get("tables")
+            if not isinstance(relationship_tables, list) or not all(
+                _find_selected_schema_table(relationship_table, selected_tables)
+                for relationship_table in relationship_tables
+            ):
+                continue
+
+            relationship = _parse_foreign_key_constraint(column)
+            if not relationship:
+                continue
+            local_column, referenced_table, referenced_column = relationship
+            selected_columns[table_name].add(local_column)
+
+            referenced_schema_table = _find_selected_schema_table(
+                referenced_table, selected_tables
+            )
+            if referenced_schema_table:
+                selected_columns[referenced_schema_table].add(referenced_column)
+
+
 
 @observe(capture_input=False)
 def check_using_db_schemas_without_pruning(
@@ -344,6 +653,7 @@ def check_using_db_schemas_without_pruning(
     encoding: tiktoken.Encoding,
     enable_column_pruning: bool,
     context_window_size: int,
+    tables: Optional[list[str]] = None,
 ) -> dict:
     retrieval_results = []
     has_calculated_field = False
@@ -387,6 +697,20 @@ def check_using_db_schemas_without_pruning(
         retrieval_result["table_ddl"] for retrieval_result in retrieval_results
     ]
     _token_count = len(encoding.encode(" ".join(table_ddls)))
+    has_explicit_tables = bool([table for table in tables or [] if table])
+    if (enable_column_pruning and not has_explicit_tables) or (
+        _token_count > context_window_size
+    ):
+        return {
+            "db_schemas": [],
+            "tokens": _token_count,
+            "has_calculated_field": has_calculated_field,
+            "has_metric": has_metric,
+            "has_json_field": has_json_field,
+            "semantic_analysis": {},
+        }
+
+
     return {
         "db_schemas": retrieval_results,
         "tokens": _token_count,
@@ -436,25 +760,124 @@ async def filter_columns_in_tables(
         return {}, generator_name
 
 
+def _retrieval_schema_text(retrieval_results: list[dict]) -> str:
+    return "\n".join(
+        " ".join(
+            str(part or "")
+            for part in (
+                result.get("table_name"),
+                result.get("table_ddl"),
+            )
+        )
+        for result in retrieval_results
+        if isinstance(result, dict)
+    )
+
+
+def _query_mentions_pattern(query: str, pattern: str) -> bool:
+    return bool(re.search(pattern, query or "", flags=re.IGNORECASE))
+
+
+def _apply_deterministic_schema_support_guard(
+    query: str,
+    semantic_analysis: dict[str, Any],
+    retrieval_results: list[dict],
+) -> dict[str, Any]:
+    if not retrieval_results:
+        return semantic_analysis if isinstance(semantic_analysis, dict) else {}
+
+    guarded_analysis = dict(semantic_analysis or {})
+    schema_text = _retrieval_schema_text(retrieval_results)
+    schema_terms = _retrieval_terms(schema_text)
+    missing_requirements = list(guarded_analysis.get("missing_requirements") or [])
+
+    def add_missing(requirement: str) -> None:
+        if requirement not in missing_requirements:
+            missing_requirements.append(requirement)
+
+    def schema_has_any(terms: set[str]) -> bool:
+        return bool(schema_terms & terms)
+
+    normalized_query = re.sub(r"\s+", " ", (query or "").strip().lower())
+    asks_sales_person = bool(
+        re.search(r"\bsales\s*person\b|\bsalesperson\b", normalized_query)
+    )
+    if (
+        not asks_sales_person
+        and _query_mentions_pattern(query, r"\b(?:sales?|revenue)\b")
+        and not schema_has_any(
+            {
+                "sale",
+                "sales",
+                "revenue",
+                "amount",
+                "value",
+                "total",
+                "price",
+                "netamount",
+                "grossamount",
+            }
+        )
+    ):
+        add_missing("sales or revenue metric")
+
+    if _query_mentions_pattern(
+        query, r"\b(?:invoice|invoices|billing)\b"
+    ) and not schema_has_any(
+        {"invoice", "invoices", "inv", "billing", "bill"}
+    ):
+        add_missing("invoice data")
+
+    if _query_mentions_pattern(
+        query, r"\b(?:currency|currencies)\b"
+    ) and not schema_has_any(
+        {"currency", "currencies", "curr", "ccy", "fx"}
+    ):
+        add_missing("currency dimension")
+
+    if _query_mentions_pattern(
+        query, r"\b(?:country|countries)\b"
+    ) and not schema_has_any(
+        {"country", "countries", "countrycode", "countryname"}
+    ):
+        add_missing("country dimension")
+
+    if missing_requirements:
+        guarded_analysis["missing_requirements"] = missing_requirements
+        guarded_analysis["is_fully_supported"] = False
+        guarded_analysis.setdefault(
+            "support_reasoning",
+            "Retrieved schema candidates do not expose every required concept in the question.",
+        )
+
+    return guarded_analysis
+
+
 @observe()
 def construct_retrieval_results(
     check_using_db_schemas_without_pruning: dict,
     filter_columns_in_tables: dict,
     construct_db_schemas: list[dict],
     dbschema_retrieval: list[Document],
+    query: str = "",
 ) -> dict[str, Any]:
     if filter_columns_in_tables:
-        retrieval_payload = orjson.loads(filter_columns_in_tables["replies"][0])
+        try:
+            retrieval_payload = orjson.loads(filter_columns_in_tables["replies"][0])
+        except (KeyError, IndexError, TypeError, orjson.JSONDecodeError):
+            logger.warning("Column selection did not return a valid retrieval payload")
+            retrieval_payload = {}
+
         columns_and_tables_needed = retrieval_payload.get("results", [])
+        if not isinstance(columns_and_tables_needed, list):
+            columns_and_tables_needed = []
         semantic_analysis = retrieval_payload.get("semantic_analysis") or {}
 
-        # we need to change the below code to match the new schema of structured output
-        # the objective of this loop is to change the structure of JSON to match the needed format
-        reformated_json = {}
-        for table in columns_and_tables_needed:
-            reformated_json[table["table_name"]] = table["table_contents"]
-        columns_and_tables_needed = reformated_json
-        tables = set(columns_and_tables_needed.keys())
+        selected_columns = _selected_columns_from_retrieval(
+            columns_and_tables_needed, construct_db_schemas
+        )
+        _include_selected_relationship_columns(selected_columns, construct_db_schemas)
+        tables = set(selected_columns)
         retrieval_results = []
         has_calculated_field = False
         has_metric = False
@@ -464,9 +887,7 @@ def construct_retrieval_results(
             if table_schema["type"] == "TABLE" and table_schema["name"] in tables:
                 ddl, _has_calculated_field, _has_json_field = build_table_ddl(
                     table_schema,
-                    columns=set(
-                        columns_and_tables_needed[table_schema["name"]]["columns"]
-                    ),
+                    columns=selected_columns[table_schema["name"]],
                     tables=tables,
                 )
                 if _has_calculated_field:
@@ -482,7 +903,7 @@ def construct_retrieval_results(
                 )
 
         for document in dbschema_retrieval:
-            if document.meta["name"] in columns_and_tables_needed:
+            if document.meta["name"] in tables:
                 content = ast.literal_eval(document.content)
 
                 if content["type"] == "METRIC":
@@ -501,6 +922,10 @@ def construct_retrieval_results(
                         }
                     )
 
+        semantic_analysis = _apply_deterministic_schema_support_guard(
+            query, semantic_analysis, retrieval_results
+        )
+
         return {
             "retrieval_results": retrieval_results,
             "has_calculated_field": has_calculated_field,
@@ -510,6 +935,11 @@ def construct_retrieval_results(
         }
     else:
         retrieval_results = check_using_db_schemas_without_pruning["db_schemas"]
+        semantic_analysis = _apply_deterministic_schema_support_guard(
+            query,
+            check_using_db_schemas_without_pruning.get("semantic_analysis", {}),
+            retrieval_results,
+        )
 
         return {
             "retrieval_results": retrieval_results,
@@ -518,9 +948,7 @@ def construct_retrieval_results(
             ],
             "has_metric": check_using_db_schemas_without_pruning["has_metric"],
             "has_json_field": check_using_db_schemas_without_pruning["has_json_field"],
-            "semantic_analysis": check_using_db_schemas_without_pruning.get(
-                "semantic_analysis", {}
-            ),
+            "semantic_analysis": semantic_analysis,
         }
 
 
@@ -598,11 +1026,15 @@ class DbSchemaRetrieval(BasicPipeline):
         table_column_retrieval_size: int = 100,
         **kwargs,
     ):
+        table_description_candidate_window = max(
+            table_retrieval_size,
+            MIN_TABLE_DESCRIPTION_CANDIDATE_WINDOW,
+        )
         self._components = {
             "embedder": embedder_provider.get_text_embedder(),
             "table_retriever": document_store_provider.get_retriever(
                 document_store_provider.get_store(dataset_name="table_descriptions"),
-                top_k=table_retrieval_size,
+                top_k=table_description_candidate_window,
             ),
             "dbschema_retriever": document_store_provider.get_retriever(
                 document_store_provider.get_store(),

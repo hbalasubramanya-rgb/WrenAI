@@ -883,6 +883,62 @@ def test_build_schema_grounded_table_question_sql_for_record_count():
     assert sql == 'SELECT COUNT(*) AS "RecordCount" FROM "dbo_failure_patterns"'
 
 
+def test_build_schema_grounded_table_question_sql_for_explicit_columns_and_filter():
+    service = AskService.__new__(AskService)
+
+    sql = service._build_schema_grounded_table_question_sql(
+        "From dbo_tblNewOrders, show orders where CustName is not empty, including CustName, OrdNo, CustNo, CustPO, and Market.",
+        [
+            """
+            CREATE TABLE dbo_tblNewOrders (
+              CustName VARCHAR,
+              OrdNo VARCHAR,
+              CustNo VARCHAR,
+              CustPO VARCHAR,
+              Market VARCHAR,
+              InternalNote VARCHAR
+            );
+            """
+        ],
+    )
+
+    assert sql == (
+        'SELECT "dbo_tblNewOrders"."CustName" AS "CustName", '
+        '"dbo_tblNewOrders"."OrdNo" AS "OrdNo", '
+        '"dbo_tblNewOrders"."CustNo" AS "CustNo", '
+        '"dbo_tblNewOrders"."CustPO" AS "CustPO", '
+        '"dbo_tblNewOrders"."Market" AS "Market" '
+        'FROM "dbo_tblNewOrders" '
+        'WHERE "dbo_tblNewOrders"."CustName" IS NOT NULL '
+        'AND "dbo_tblNewOrders"."CustName" <> \'\''
+    )
+
+
+def test_build_schema_grounded_table_question_sql_for_sales_by_country():
+    service = AskService.__new__(AskService)
+
+    sql = service._build_schema_grounded_table_question_sql(
+        "compare sales between countries",
+        [
+            """
+            CREATE TABLE dbo_tblSales (
+              Country VARCHAR,
+              SalesValue DECIMAL
+            );
+            """
+        ],
+    )
+
+    assert sql == (
+        'SELECT "dbo_tblSales"."Country" AS "Country", '
+        'SUM("dbo_tblSales"."SalesValue") AS "TotalSales" '
+        'FROM "dbo_tblSales" '
+        'WHERE "dbo_tblSales"."Country" IS NOT NULL '
+        'GROUP BY "dbo_tblSales"."Country" '
+        'ORDER BY SUM("dbo_tblSales"."SalesValue") DESC'
+    )
+
+
 def test_build_schema_grounded_table_question_sql_for_name_distribution():
     service = AskService.__new__(AskService)
 
