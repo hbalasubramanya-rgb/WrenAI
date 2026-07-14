@@ -11,6 +11,7 @@ from src.core.pipeline import BasicPipeline
 from src.pipelines.generation.utils.sql import (
     construct_valid_table_columns,
     construct_valid_table_names,
+    get_schema_intent_analysis_error,
     normalize_sql_column_references_to_schema,
     normalize_sql_table_references_to_schema,
 )
@@ -70,142 +71,6 @@ class AskResult(BaseModel):
 class AskError(BaseModel):
     code: Literal["NO_RELEVANT_DATA", "NO_RELEVANT_SQL", "OTHERS"]
     message: str
-
-
-def _semantic_analysis_items(
-    semantic_analysis: dict[str, Any] | None, key: str
-) -> list[str]:
-    if not isinstance(semantic_analysis, dict):
-        return []
-
-    value = semantic_analysis.get(key)
-    if isinstance(value, str):
-        return [value.strip()] if value.strip() else []
-    if isinstance(value, list):
-        return [
-            str(item).strip()
-            for item in value
-            if item is not None and str(item).strip()
-        ]
-    return []
-
-
-def _semantic_analysis_dict_items(
-    semantic_analysis: dict[str, Any] | None, key: str
-) -> list[dict[str, Any]]:
-    if not isinstance(semantic_analysis, dict):
-        return []
-
-    value = semantic_analysis.get(key)
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
-def _has_semantic_analysis(semantic_analysis: dict[str, Any] | None) -> bool:
-    if not isinstance(semantic_analysis, dict) or not semantic_analysis:
-        return False
-
-    semantic_keys = {
-        "analytical_intent",
-        "entities",
-        "identifiers",
-        "metrics",
-        "dimensions",
-        "filters",
-        "aggregations",
-        "relationships",
-        "time_constraints",
-        "ranking",
-        "supported_schema_objects",
-        "concept_mappings",
-        "interpretations",
-        "missing_requirements",
-        "ambiguous_requirements",
-        "support_reasoning",
-    }
-    return any(semantic_analysis.get(key) for key in semantic_keys)
-
-
-def _schema_interpretation_clarification_error(
-    semantic_analysis: dict[str, Any],
-) -> str | None:
-    interpretations = _semantic_analysis_dict_items(
-        semantic_analysis, "interpretations"
-    )
-    if not interpretations:
-        return None
-
-    selected_interpretations = [
-        str(interpretation.get("description") or "").strip()
-        for interpretation in interpretations
-        if interpretation.get("is_selected") is True
-        and str(interpretation.get("description") or "").strip()
-    ]
-    if len(selected_interpretations) > 1:
-        return (
-            "The request has multiple selected schema interpretations: "
-            f"{', '.join(selected_interpretations)}. Please clarify which one to use."
-        )
-
-    clarification_interpretations = [
-        str(interpretation.get("description") or "").strip()
-        for interpretation in interpretations
-        if interpretation.get("needs_clarification") is True
-        and str(interpretation.get("description") or "").strip()
-    ]
-    if clarification_interpretations:
-        return (
-            "The request needs clarification before SQL generation: "
-            f"{', '.join(clarification_interpretations)}."
-        )
-
-    return None
-
-
-def get_schema_intent_analysis_error(
-    semantic_analysis: dict[str, Any] | None,
-) -> str | None:
-    if not _has_semantic_analysis(semantic_analysis):
-        return None
-
-    missing_requirements = _semantic_analysis_items(
-        semantic_analysis, "missing_requirements"
-    )
-    if missing_requirements:
-        return (
-            "The active datasource schema does not expose the information needed "
-            "to answer the request: "
-            f"{', '.join(missing_requirements)}. I cannot generate unrelated SQL."
-        )
-
-    ambiguous_requirements = _semantic_analysis_items(
-        semantic_analysis, "ambiguous_requirements"
-    )
-    if ambiguous_requirements:
-        return (
-            "The request has multiple equally plausible schema interpretations: "
-            f"{', '.join(ambiguous_requirements)}. Please clarify which one to use."
-        )
-
-    if interpretation_error := _schema_interpretation_clarification_error(
-        semantic_analysis
-    ):
-        return interpretation_error
-
-    if semantic_analysis.get("is_fully_supported") is False:
-        support_reasoning = str(semantic_analysis.get("support_reasoning") or "").strip()
-        if support_reasoning:
-            return (
-                "The selected schema does not fully support the request: "
-                f"{support_reasoning}"
-            )
-        return (
-            "The selected schema does not fully support every required component "
-            "of the request. I cannot generate unrelated SQL."
-        )
-
-    return None
 
 
 class AskResultRequest(BaseModel):
@@ -414,10 +279,6 @@ class AskService:
             "compare",
             "count",
             "cost",
-            "countries",
-            "country",
-            "currencies",
-            "currency",
             "customer",
             "customers",
             "dashboard",
@@ -436,8 +297,6 @@ class AskService:
             "pcb",
             "performance",
             "profit",
-            "product",
-            "products",
             "quarter",
             "quantity",
             "rank",
@@ -451,8 +310,6 @@ class AskService:
             "sales rep",
             "salesperson",
             "sla",
-            "sold",
-            "selling",
             "top",
             "trend",
             "turnaround",
@@ -1319,17 +1176,16 @@ class AskService:
     def _build_schema_grounded_table_question_sql(
         self, query: str, table_ddls: list[str]
     ) -> str | None:
+        # Heuristic SQL skips semantic schema selection and can select a merely
+        # keyword-matching table. Let the scoped SQL-generation pipeline handle it.
+        return None
+
         normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
         if not normalized:
             return None
 
         tables = self._parse_schema_tables(table_ddls)
-        if not tables:
-            return None
-
         table = self._find_best_schema_table_for_query(query, tables)
-        if not table and len(tables) == 1:
-            table = tables[0]
         if not table:
             return None
 
@@ -1337,59 +1193,15 @@ class AskService:
         table_ref = self._quote_sql_identifier(table_name)
         limit = self._extract_requested_top_n(query, default_value=10)
 
-        def column_ref(column_name: str) -> str:
-            return f"{table_ref}.{self._quote_sql_identifier(column_name)}"
-
-        mentioned_columns = [
-            str(column.get("name"))
-            for column in table.get("columns", [])
-            if column.get("name")
-            and self._query_mentions_column(query, str(column.get("name")))
-        ]
-
-        not_empty_columns = []
-        for column_name in mentioned_columns:
-            escaped = re.escape(column_name)
-            if re.search(
-                rf"\b{escaped}\b[^.!?;]{{0,80}}\bnot\s+(?:empty|blank|null)\b",
-                query or "",
-                flags=re.IGNORECASE,
-            ):
-                not_empty_columns.append(column_name)
-
-        if mentioned_columns and any(
-            term in normalized
-            for term in ("including", "include", "where", "not empty", "not blank")
-        ):
-            selected_columns = []
-            for column_name in mentioned_columns:
-                if column_name not in selected_columns:
-                    selected_columns.append(column_name)
-            select_clause = ", ".join(
-                f"{column_ref(column_name)} AS {self._quote_sql_identifier(column_name)}"
-                for column_name in selected_columns
-            )
-            where_clauses = []
-            for column_name in not_empty_columns:
-                ref = column_ref(column_name)
-                where_clauses.append(f"{ref} IS NOT NULL AND {ref} <> ''")
-            where_clause = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
-            return f"SELECT {select_clause} FROM {table_ref}{where_clause}"
-
         wants_latest_records = any(
             term in normalized
             for term in ("latest", "recent", "newest", "last records", "latest records")
-        ) or bool(
-            re.search(
-                r"\blast\s+\d+\s+(?:orders?|records?|rows?|invoices?|transactions?)\b",
-                normalized,
-            )
         )
         if wants_latest_records:
             date_column = self._find_temporal_column_for_query(query, table)
             if not date_column:
-                return f"SELECT TOP {limit} * FROM {table_ref}"
-            date_ref = column_ref(date_column)
+                return None
+            date_ref = f"{table_ref}.{self._quote_sql_identifier(date_column)}"
             return (
                 f"SELECT TOP {limit} * "
                 f"FROM {table_ref} "
@@ -1405,7 +1217,7 @@ class AskService:
             date_column = self._find_temporal_column_for_query(query, table)
             if not date_column:
                 return None
-            date_ref = column_ref(date_column)
+            date_ref = f"{table_ref}.{self._quote_sql_identifier(date_column)}"
             return (
                 f"SELECT DATEPART(YEAR, {date_ref}) AS \"year\", "
                 f"DATEPART(MONTH, {date_ref}) AS \"month\", "
@@ -1422,275 +1234,28 @@ class AskService:
             or "record count" in normalized
             or "count of records" in normalized
             or "number of records" in normalized
-        ) and not re.search(
-            r"\b(?:by|per|each|distribution|highest|top)\b", normalized
-        )
+        ) and not re.search(r"\b(?:by|per|each|distribution|highest|top)\b", normalized)
         if wants_total_count:
             return f'SELECT COUNT(*) AS "RecordCount" FROM {table_ref}'
-
-        def first_schema_column(candidates: tuple[str, ...]) -> str | None:
-            return self._find_schema_column(table, candidates)
-
-        def first_numeric_schema_column(candidates: tuple[str, ...]) -> str | None:
-            return self._find_schema_column(table, candidates, numeric=True)
-
-        def dimension_column_for_query() -> str | None:
-            if re.search(r"\b(?:customer|customers|client|clients)\b", normalized):
-                return first_schema_column(
-                    (
-                        "Customer",
-                        "CustomerName",
-                        "CustName",
-                        "CustNo",
-                        "CustomerNo",
-                        "CustomerId",
-                        "CustId",
-                        "Client",
-                        "ClientName",
-                        "Account",
-                        "AccountName",
-                    )
-                )
-            if re.search(r"\b(?:product|products|item|items|sku)\b", normalized):
-                return first_schema_column(
-                    (
-                        "Product",
-                        "ProductName",
-                        "ProdName",
-                        "ProdCode",
-                        "Item",
-                        "ItemName",
-                        "ItemNo",
-                        "SKU",
-                        "Material",
-                        "PartNo",
-                        "Description",
-                    )
-                )
-            if re.search(r"\b(?:country|countries)\b", normalized):
-                return first_schema_column(
-                    (
-                        "Country",
-                        "CountryCode",
-                        "CountryName",
-                        "Nation",
-                        "ShipCountry",
-                        "BillCountry",
-                    )
-                )
-            if re.search(r"\b(?:currency|currencies|ccy)\b", normalized):
-                return first_schema_column(
-                    (
-                        "Currency",
-                        "CurrencyCode",
-                        "Curr",
-                        "CurrCode",
-                        "Ccy",
-                        "CCY",
-                    )
-                )
-            if "market" in normalized:
-                return first_schema_column(("Market", "Region"))
-            return self._find_dimension_column_for_query(query, table)
-
-        def metric_column_for_query() -> tuple[str | None, str, str]:
-            if "average" in normalized or re.search(r"\bavg\b", normalized):
-                aggregate = "AVG"
-                alias_prefix = "Average"
-            else:
-                aggregate = "SUM"
-                alias_prefix = "Total"
-
-            if re.search(r"\b(?:order|orders)\b", normalized) and re.search(
-                r"\b(?:amount|amounts|value|values|total|totals)\b", normalized
-            ):
-                return (
-                    first_numeric_schema_column(
-                        (
-                            "OrderValue",
-                            "OrderAmount",
-                            "OrderTotal",
-                            "OrdValue",
-                            "OrdAmount",
-                            "Amount",
-                            "NetAmount",
-                            "GrossAmount",
-                            "Value",
-                            "NetValue",
-                            "GrossValue",
-                            "Total",
-                            "TotalAmount",
-                        )
-                    ),
-                    aggregate,
-                    f"{alias_prefix}OrderValue",
-                )
-
-            if re.search(r"\b(?:invoice|invoices)\b", normalized) and re.search(
-                r"\b(?:amount|amounts|value|values|total|totals)\b", normalized
-            ):
-                return (
-                    first_numeric_schema_column(
-                        (
-                            "InvoiceAmount",
-                            "InvAmount",
-                            "InvoiceValue",
-                            "InvValue",
-                            "Amount",
-                            "NetAmount",
-                            "GrossAmount",
-                            "ExtAmount",
-                            "ExtendedAmount",
-                            "LineValue",
-                            "TotalAmount",
-                            "InvoiceTotal",
-                            "SalesValue",
-                        )
-                    ),
-                    aggregate,
-                    f"{alias_prefix}InvoiceAmount",
-                )
-
-            if re.search(
-                r"\b(?:quantity|qty|sold|selling|top-selling|top selling)\b",
-                normalized,
-            ):
-                return (
-                    first_numeric_schema_column(
-                        (
-                            "Quantity",
-                            "Qty",
-                            "SalesQty",
-                            "SalesQuantity",
-                            "InvoiceQuantity",
-                            "OrderQty",
-                            "OrderedQty",
-                            "OrderQuantity",
-                            "QtyOrdered",
-                            "SoldQty",
-                            "InvoicedQty",
-                            "ShippedQty",
-                            "Units",
-                        )
-                    ),
-                    aggregate,
-                    f"{alias_prefix}Quantity",
-                )
-
-            if re.search(
-                r"\b(?:sales?|revenue|value|values|amount|amounts)\b",
-                normalized,
-            ):
-                return (
-                    first_numeric_schema_column(
-                        (
-                            "SalesValue",
-                            "SalesAmount",
-                            "Sales",
-                            "Revenue",
-                            "Amount",
-                            "NetAmount",
-                            "GrossAmount",
-                            "Value",
-                            "NetValue",
-                            "GrossValue",
-                            "Total",
-                            "TotalAmount",
-                            "Price",
-                        )
-                    ),
-                    aggregate,
-                    f"{alias_prefix}Sales",
-                )
-
-            return (None, aggregate, f"{alias_prefix}Value")
-
-        asks_grouped_metric = bool(
-            re.search(
-                r"\b(?:top|by|per|each|across|between|total|sum|average|avg|selling|sold)\b",
-                normalized,
-            )
-        )
-        if asks_grouped_metric:
-            dimension_column = dimension_column_for_query()
-            metric_column, aggregate, alias = metric_column_for_query()
-            if dimension_column and metric_column:
-                dimension_ref = column_ref(dimension_column)
-                metric_ref = column_ref(metric_column)
-                top_clause = f"TOP {limit} " if "top" in normalized else ""
-                return (
-                    f"SELECT {top_clause}{dimension_ref} AS "
-                    f"{self._quote_sql_identifier(dimension_column)}, "
-                    f"{aggregate}({metric_ref}) AS {self._quote_sql_identifier(alias)} "
-                    f"FROM {table_ref} "
-                    f"WHERE {dimension_ref} IS NOT NULL "
-                    f"GROUP BY {dimension_ref} "
-                    f"ORDER BY {aggregate}({metric_ref}) DESC"
-                )
-
-        if re.search(r"\b(?:sales?|revenue)\b", normalized):
-            if not re.search(r"\bsales\s*person\b|\bsalesperson\b", normalized):
-                metric_column = self._find_schema_column(
-                    table,
-                    (
-                        "SalesValue",
-                        "Sales",
-                        "Revenue",
-                        "Amount",
-                        "Value",
-                        "Total",
-                        "Price",
-                    ),
-                    numeric=True,
-                )
-                dimension_column = None
-                if re.search(r"\b(?:country|countries)\b", normalized):
-                    dimension_column = self._find_schema_column(
-                        table,
-                        ("Country", "CountryCode", "CountryName"),
-                    )
-                elif "market" in normalized:
-                    dimension_column = self._find_schema_column(
-                        table,
-                        ("Market", "Region"),
-                    )
-                if metric_column and dimension_column:
-                    metric_ref = column_ref(metric_column)
-                    dimension_ref = column_ref(dimension_column)
-                    return (
-                        f"SELECT {dimension_ref} AS {self._quote_sql_identifier(dimension_column)}, "
-                        f'SUM({metric_ref}) AS "TotalSales" '
-                        f"FROM {table_ref} "
-                        f"WHERE {dimension_ref} IS NOT NULL "
-                        f"GROUP BY {dimension_ref} "
-                        f"ORDER BY SUM({metric_ref}) DESC"
-                    )
 
         wants_distribution = any(
             term in normalized
             for term in (
                 "distribution",
-                "group by",
-                "grouped by",
-                "highest",
-                "most ",
-                "common",
-                "occurrence",
+                "highest occurrence",
+                "highest occurrences",
+                "most occurrence",
+                "most occurrences",
                 "occurrences",
                 "top",
-                " by ",
-                "per ",
-                "each ",
+                "common",
             )
         )
         if wants_distribution:
-            dimension_column = (
-                dimension_column_for_query()
-                or self._find_dimension_column_for_query(query, table)
-            )
+            dimension_column = self._find_dimension_column_for_query(query, table)
             if not dimension_column:
                 return None
-            dimension_ref = column_ref(dimension_column)
+            dimension_ref = f"{table_ref}.{self._quote_sql_identifier(dimension_column)}"
 
             occurrence_column = self._find_schema_column(
                 table,
@@ -1700,18 +1265,19 @@ class AskService:
             if occurrence_column and self._query_mentions_column(
                 query, occurrence_column
             ):
-                occurrence_ref = column_ref(occurrence_column)
+                metric_ref = f"{table_ref}.{self._quote_sql_identifier(occurrence_column)}"
                 return (
                     f"SELECT TOP {limit} {dimension_ref} AS "
                     f"{self._quote_sql_identifier(dimension_column)}, "
-                    f"{occurrence_ref} AS {self._quote_sql_identifier(occurrence_column)} "
+                    f"{metric_ref} AS {self._quote_sql_identifier(occurrence_column)} "
                     f"FROM {table_ref} "
                     f"WHERE {dimension_ref} IS NOT NULL "
-                    f"ORDER BY {occurrence_ref} DESC"
+                    f"ORDER BY {metric_ref} DESC"
                 )
 
             return (
-                f"SELECT TOP {limit} {dimension_ref} AS {self._quote_sql_identifier(dimension_column)}, "
+                f"SELECT TOP {limit} {dimension_ref} AS "
+                f"{self._quote_sql_identifier(dimension_column)}, "
                 f'COUNT(*) AS "RecordCount" '
                 f"FROM {table_ref} "
                 f"WHERE {dimension_ref} IS NOT NULL "
@@ -1724,6 +1290,10 @@ class AskService:
     def _build_explicit_table_preview_sql(
         self, query: str, table_ddls: list[str]
     ) -> tuple[str, str] | None:
+        # A preview cannot safely infer which fields the user needs. The scoped
+        # generator must choose the required columns instead of emitting SELECT *.
+        return None
+
         normalized_query = re.sub(r"\s+", " ", (query or "").strip())
         if not normalized_query:
             return None
@@ -2674,8 +2244,6 @@ class AskService:
         if match := re.search(
             r"\b(?:first|limit)\s+(\d+)\b", query or "", flags=re.IGNORECASE
         ):
-            return max(1, min(int(match.group(1)), 100))
-        if match := re.search(r"\blast\s+(\d+)\b", query or "", flags=re.IGNORECASE):
             return max(1, min(int(match.group(1)), 100))
         if match := re.search(r"\b(\d+)\s+rows?\b", query or "", flags=re.IGNORECASE):
             return max(1, min(int(match.group(1)), 100))
@@ -4189,8 +3757,6 @@ class AskService:
         allow_dry_plan_fallback = ask_request.allow_dry_plan_fallback
         sql_knowledge = None
         schema_intent_analysis: dict[str, Any] = {}
-        prefetched_retrieval_result: Optional[dict] = None
-        force_text_to_sql = False
 
         try:
             sql_user_query = user_query
@@ -4348,37 +3914,85 @@ class AskService:
                         results["metadata"]["type"] = "TEXT_TO_SQL"
                         return results
 
-                    if not documents:
-                        error_message = (
-                            "The requested table was not found in the deployed schema: "
-                            + ", ".join(explicit_table_names)
-                        )
-                        self._ask_results[query_id] = AskResultResponse(
-                            status="failed",
-                            type="TEXT_TO_SQL",
-                            error=AskError(
-                                code="NO_RELEVANT_DATA",
-                                message=error_message,
-                            ),
-                            rephrased_question=user_query,
-                            intent_reasoning="Explicit table request did not match any deployed schema table.",
-                            retrieved_tables=table_names,
-                            trace_id=trace_id,
-                            is_followup=True if histories else False,
-                        )
-                        results["metadata"]["error_type"] = "NO_RELEVANT_DATA"
-                        results["metadata"]["error_message"] = error_message
-                        results["metadata"]["type"] = "TEXT_TO_SQL"
-                        return results
-
-                    prefetched_retrieval_result = retrieval_result
-                    retrieval_table_names = table_names or explicit_table_names
-                    rephrased_question = user_query
-                    intent_reasoning = (
-                        "Explicit table request matched deployed schema; generating SQL against only the requested table metadata."
+                    error_message = (
+                        "The requested table was not found in the deployed schema: "
+                        + ", ".join(explicit_table_names)
                     )
-                    sql_user_query = user_query
-                    force_text_to_sql = True
+                    self._ask_results[query_id] = AskResultResponse(
+                        status="failed",
+                        type="TEXT_TO_SQL",
+                        error=AskError(
+                            code="NO_RELEVANT_DATA",
+                            message=error_message,
+                        ),
+                        rephrased_question=user_query,
+                        intent_reasoning="Explicit table preview request did not match any deployed schema table.",
+                        retrieved_tables=table_names,
+                        trace_id=trace_id,
+                        is_followup=True if histories else False,
+                    )
+                    results["metadata"]["error_type"] = "NO_RELEVANT_DATA"
+                    results["metadata"]["error_message"] = error_message
+                    results["metadata"]["type"] = "TEXT_TO_SQL"
+                    return results
+
+                if (
+                    not request_explicit_table_names
+                    and self._is_direct_heuristic_sql_query(user_query)
+                ):
+                    self._ask_results[query_id] = AskResultResponse(
+                        status="searching",
+                        type="TEXT_TO_SQL",
+                        trace_id=trace_id,
+                        is_followup=True if histories else False,
+                    )
+                    retrieval_result = await self._run_with_timeout(
+                        "Schema retrieval",
+                        self._pipelines["db_schema_retrieval"].run(
+                            query=user_query,
+                            histories=histories,
+                            project_id=ask_request.project_id,
+                            enable_column_pruning=True,
+                        ),
+                    )
+                    documents, table_names, table_ddls = (
+                        self._extract_retrieval_metadata(retrieval_result)
+                    )
+                    logger.info(
+                        "Retrieved tables for direct heuristic query_id %s: %s",
+                        query_id,
+                        table_names,
+                    )
+
+                    if heuristic_sql := self._build_heuristic_text_to_sql_fallback(
+                        user_query, table_ddls, table_names=table_names
+                    ):
+                        logger.info(
+                            "Using direct heuristic text-to-sql fallback for query_id %s: %s",
+                            query_id,
+                            user_query,
+                        )
+                        if ask_result := self._build_validated_ask_result_from_sql(
+                            heuristic_sql,
+                            table_ddls,
+                            user_query,
+                        ):
+                            api_results = [ask_result]
+                            if not self._is_stopped(query_id, self._ask_results):
+                                self._ask_results[query_id] = AskResultResponse(
+                                    status="finished",
+                                    type="TEXT_TO_SQL",
+                                    response=api_results,
+                                    rephrased_question=user_query,
+                                    retrieved_tables=table_names,
+                                    trace_id=trace_id,
+                                    is_followup=True if histories else False,
+                                )
+                            results["ask_result"] = api_results
+                            results["metadata"]["type"] = "TEXT_TO_SQL"
+                            return results
+                        invalid_sql = heuristic_sql
+                        error_message = "Heuristic SQL fallback was not valid for the active datasource schema."
 
                 if explicit_group_count_sql := self._build_explicit_group_count_sql(
                     user_query
@@ -4403,46 +4017,26 @@ class AskService:
                         query_id,
                     )
 
-                if (
-                    not api_results
-                    and not force_text_to_sql
-                    and self._is_data_analysis_query(user_query)
-                ):
-                    force_text_to_sql = True
-                    rephrased_question = user_query
-                    intent_reasoning = (
-                        "Detected a data analysis question; skipping intent "
-                        "classification and retrieving the active schema directly."
-                    )
-                    sql_user_query = self._rewrite_query_for_text_to_sql(user_query)
-                    logger.info(
-                        "Skipping intent classification for analytics query_id %s: %s",
-                        query_id,
-                        user_query,
-                    )
-
                 if not api_results:
                     original_user_query = user_query
                     # Only user instructions are kept. Prior SQL samples are not
                     # reused for fresh questions because they can bias the model
                     # toward stale or unrelated queries.
-                    sql_samples = []
-                    if force_text_to_sql:
-                        instructions = []
-                    else:
-                        instructions_task = await self._run_with_timeout(
-                            "Instruction retrieval",
-                            self._pipelines["instructions_retrieval"].run(
-                                query=user_query,
-                                project_id=ask_request.project_id,
-                                scope="sql",
-                            ),
-                        )
-                        instructions = instructions_task["formatted_output"].get(
-                            "documents", []
-                        )
+                    instructions_task = await self._run_with_timeout(
+                        "Instruction retrieval",
+                        self._pipelines["instructions_retrieval"].run(
+                            query=user_query,
+                            project_id=ask_request.project_id,
+                            scope="sql",
+                        ),
+                    )
 
-                    if self._allow_intent_classification and not force_text_to_sql:
+                    sql_samples = []
+                    instructions = instructions_task["formatted_output"].get(
+                        "documents", []
+                    )
+
+                    if self._allow_intent_classification:
                         try:
                             intent_classification_result = (
                                 await self._run_with_timeout(
@@ -4622,23 +4216,17 @@ class AskService:
                     is_followup=True if histories else False,
                 )
 
-                if prefetched_retrieval_result is not None:
-                    retrieval_result = prefetched_retrieval_result
-                else:
-                    retrieval_result = await self._run_with_timeout(
-                        "Schema retrieval",
-                        self._pipelines["db_schema_retrieval"].run(
-                            query=sql_user_query,
-                            tables=retrieval_table_names,
-                            histories=histories,
-                            project_id=ask_request.project_id,
-                            enable_column_pruning=True,
-                        ),
-                        timeout_seconds=min(
-                            self._schema_retrieval_timeout_seconds,
-                            self._pipeline_timeout_seconds,
-                        ),
-                    )
+                retrieval_result = await self._run_with_timeout(
+                    "Schema retrieval",
+                    self._pipelines["db_schema_retrieval"].run(
+                        query=sql_user_query,
+                        tables=retrieval_table_names,
+                        histories=histories,
+                        project_id=ask_request.project_id,
+                        enable_column_pruning=True,
+                    ),
+                    timeout_seconds=self._schema_retrieval_timeout_seconds,
+                )
                 _retrieval_result = retrieval_result.get(
                     "construct_retrieval_results", {}
                 )
@@ -4665,10 +4253,7 @@ class AskService:
                                 histories=histories,
                                 enable_column_pruning=True,
                             ),
-                            timeout_seconds=min(
-                                self._schema_retrieval_timeout_seconds,
-                                self._pipeline_timeout_seconds,
-                            ),
+                            timeout_seconds=self._schema_retrieval_timeout_seconds,
                         )
                         _retrieval_result = retrieval_result.get(
                             "construct_retrieval_results", {}
@@ -4822,6 +4407,54 @@ class AskService:
                     return results
 
                 if not documents:
+                    if heuristic_sql := self._build_heuristic_text_to_sql_fallback(
+                        user_query, table_ddls, table_names=table_names
+                    ):
+                        logger.info(
+                            "Using heuristic text-to-sql fallback before retrieval failure for query_id %s: %s",
+                            query_id,
+                            user_query,
+                        )
+                        ask_result = self._build_validated_ask_result_from_sql(
+                            heuristic_sql,
+                            table_ddls,
+                            user_query,
+                        )
+                        if not ask_result:
+                            invalid_sql = heuristic_sql
+                            error_message = "Heuristic SQL fallback was not valid for the active datasource schema."
+                            if not self._is_stopped(query_id, self._ask_results):
+                                self._ask_results[query_id] = (
+                                    self._build_failed_text_to_sql_response(
+                                        trace_id,
+                                        error_message,
+                                        rephrased_question=rephrased_question,
+                                        intent_reasoning=intent_reasoning,
+                                        retrieved_tables=table_names,
+                                        invalid_sql=invalid_sql,
+                                        is_followup=True if histories else False,
+                                    )
+                                )
+                            results["metadata"]["error_type"] = "NO_RELEVANT_SQL"
+                            results["metadata"]["error_message"] = error_message
+                            results["metadata"]["type"] = "TEXT_TO_SQL"
+                            return results
+                        api_results = [ask_result]
+                        if not self._is_stopped(query_id, self._ask_results):
+                            self._ask_results[query_id] = AskResultResponse(
+                                status="finished",
+                                type="TEXT_TO_SQL",
+                                response=api_results,
+                                rephrased_question=rephrased_question,
+                                intent_reasoning=intent_reasoning,
+                                retrieved_tables=table_names,
+                                trace_id=trace_id,
+                                is_followup=True if histories else False,
+                            )
+                        results["ask_result"] = api_results
+                        results["metadata"]["type"] = "TEXT_TO_SQL"
+                        return results
+
                     logger.exception(f"ask pipeline - NO_RELEVANT_DATA: {user_query}")
                     if not self._is_stopped(query_id, self._ask_results):
                         self._ask_results[query_id] = AskResultResponse(
@@ -5039,10 +4672,7 @@ class AskService:
                                     project_id=ask_request.project_id,
                                     enable_column_pruning=True,
                                 ),
-                                timeout_seconds=min(
-                                    self._schema_retrieval_timeout_seconds,
-                                    self._pipeline_timeout_seconds,
-                                ),
+                                timeout_seconds=self._schema_retrieval_timeout_seconds,
                             )
                             retry_construct_result = retry_retrieval_result.get(
                                 "construct_retrieval_results", {}
@@ -5270,6 +4900,40 @@ class AskService:
                 results["ask_result"] = api_results
                 results["metadata"]["type"] = "TEXT_TO_SQL"
             else:
+                if heuristic_sql := self._build_heuristic_text_to_sql_fallback(
+                    user_query, table_ddls, table_names=table_names
+                ):
+                    logger.info(
+                        "Using heuristic text-to-sql fallback for query_id %s: %s",
+                        query_id,
+                        user_query,
+                    )
+                    ask_result = self._build_validated_ask_result_from_sql(
+                        heuristic_sql,
+                        table_ddls,
+                        user_query,
+                    )
+                    if not ask_result:
+                        invalid_sql = heuristic_sql
+                        error_message = "Heuristic SQL fallback was not valid for the active datasource schema."
+                    else:
+                        api_results = [ask_result]
+                        if not self._is_stopped(query_id, self._ask_results):
+                            self._ask_results[query_id] = AskResultResponse(
+                                status="finished",
+                                type="TEXT_TO_SQL",
+                                response=api_results,
+                                rephrased_question=rephrased_question,
+                                intent_reasoning=intent_reasoning,
+                                retrieved_tables=table_names,
+                                sql_generation_reasoning=sql_generation_reasoning,
+                                trace_id=trace_id,
+                                is_followup=True if histories else False,
+                            )
+                        results["ask_result"] = api_results
+                        results["metadata"]["type"] = "TEXT_TO_SQL"
+                        return results
+
                 logger.exception(f"ask pipeline - NO_RELEVANT_SQL: {user_query}")
                 if not self._is_stopped(query_id, self._ask_results):
                     self._ask_results[query_id] = AskResultResponse(
