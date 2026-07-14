@@ -569,6 +569,22 @@ def test_build_explicit_group_count_sql_for_schema_table_column_reference():
     )
 
 
+def test_build_explicit_group_count_sql_for_table_using_column_reference():
+    service = AskService.__new__(AskService)
+    sql = service._build_explicit_group_count_sql(
+        "From dbo_tblNewOrders, show the top 5 customers by order count using CustName."
+    )
+
+    assert sql == (
+        'SELECT TOP 5 "dbo_tblNewOrders"."CustName" AS "CustName", '
+        'COUNT(*) AS "OrderCount" '
+        'FROM "dbo_tblNewOrders" '
+        'WHERE "dbo_tblNewOrders"."CustName" IS NOT NULL '
+        'GROUP BY "dbo_tblNewOrders"."CustName" '
+        'ORDER BY COUNT(*) DESC'
+    )
+
+
 def test_build_schema_grounded_sql_for_knowledge_source_request_uses_existing_columns():
     service = AskService.__new__(AskService)
     sql = service._build_schema_grounded_sales_sql(

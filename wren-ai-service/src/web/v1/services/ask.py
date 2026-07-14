@@ -1487,14 +1487,58 @@ class AskService:
             r"(?P<column>[A-Za-z_][A-Za-z0-9_]*)\b",
             normalized_query,
         )
-        if not reference_match:
+        if reference_match:
+            schema = reference_match.group("schema")
+            table = reference_match.group("table")
+            column = reference_match.group("column")
+            table_name = f"{schema}_{table}"
+            return table_name, column
+
+        explicit_table_names = self._extract_explicit_table_names_from_query(query)
+        if not explicit_table_names:
             return None
 
-        schema = reference_match.group("schema")
-        table = reference_match.group("table")
-        column = reference_match.group("column")
-        table_name = f"{schema}_{table}"
-        return table_name, column
+        column_patterns = (
+            r"\busing\s+(?P<column>[A-Za-z_][A-Za-z0-9_$]*)\b",
+            r"\bgroup(?:ed)?\s+by\s+(?P<column>[A-Za-z_][A-Za-z0-9_$]*)\b",
+            r"\bby\s+(?P<column>[A-Za-z_][A-Za-z0-9_$]*)\b",
+        )
+        ignored_column_tokens = {
+            "count",
+            "counts",
+            "date",
+            "month",
+            "orders",
+            "order",
+            "records",
+            "record",
+            "rows",
+            "row",
+            "year",
+        }
+        column_name = None
+        for pattern in column_patterns:
+            for match in re.finditer(pattern, normalized_query, flags=re.IGNORECASE):
+                candidate = match.group("column").strip(".,;:()[]{}")
+                if candidate.lower() in ignored_column_tokens:
+                    continue
+                column_name = candidate
+                break
+            if column_name:
+                break
+
+        if not column_name:
+            return None
+
+        table_name = next(
+            (
+                candidate
+                for candidate in explicit_table_names
+                if "." not in candidate and "$" not in candidate
+            ),
+            explicit_table_names[0],
+        )
+        return table_name, column_name
 
     def _build_explicit_group_count_sql(self, query: str) -> str | None:
         normalized_query = re.sub(r"\s+", " ", (query or "").strip().lower())
@@ -1523,10 +1567,21 @@ class AskService:
         table_name, column = explicit_reference
         table_ref = self._quote_sql_identifier(table_name)
         column_ref = f"{table_ref}.{self._quote_sql_identifier(column)}"
+        wants_top = bool(
+            re.search(r"\b(?:top|highest|largest|most)\b", normalized_query)
+        )
+        top_clause = (
+            f"TOP {self._extract_requested_top_n(query, default_value=10)} "
+            if wants_top
+            else ""
+        )
+        where_clause = f"WHERE {column_ref} IS NOT NULL " if wants_top else ""
+        count_alias = "OrderCount" if "order" in normalized_query else "RecordCount"
         return (
-            f"SELECT {column_ref} AS {self._quote_sql_identifier(column)}, "
-            f'COUNT(*) AS "RecordCount" '
+            f"SELECT {top_clause}{column_ref} AS {self._quote_sql_identifier(column)}, "
+            f"COUNT(*) AS {self._quote_sql_identifier(count_alias)} "
             f"FROM {table_ref} "
+            f"{where_clause}"
             f"GROUP BY {column_ref} "
             f"ORDER BY COUNT(*) DESC"
         )
@@ -3308,9 +3363,6 @@ class AskService:
             "repair cost",
             "repair_cost",
             "repaircost",
-            "cost",
-            "cost impact",
-            "cost_impact",
         )
         if any(term in normalized_query for term in repair_cost_terms):
             cost_field_patterns = (

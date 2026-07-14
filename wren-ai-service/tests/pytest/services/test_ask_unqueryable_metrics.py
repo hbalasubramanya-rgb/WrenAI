@@ -100,3 +100,27 @@ def test_repair_cost_guard_allows_queryable_cost_field():
         )
         is None
     )
+
+
+def test_order_cost_does_not_trigger_repair_cost_guard():
+    service = AskService(pipelines={})
+    table_ddls = [
+        """
+        CREATE TABLE dbo_tblSales (
+          Division VARCHAR,
+          BU VARCHAR,
+          Country VARCHAR,
+          Market VARCHAR,
+          SalesValue DOUBLE
+        );
+        """
+    ]
+
+    assert (
+        service._get_unqueryable_metric_message(
+            "For each division and business unit, what is the total cost of "
+            "orders placed in different countries and markets?",
+            table_ddls,
+        )
+        is None
+    )
