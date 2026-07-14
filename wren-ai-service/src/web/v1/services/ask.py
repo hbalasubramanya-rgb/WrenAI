@@ -4185,6 +4185,24 @@ class AskService:
                         query_id,
                     )
 
+                if (
+                    not api_results
+                    and not force_text_to_sql
+                    and self._is_data_analysis_query(user_query)
+                ):
+                    force_text_to_sql = True
+                    rephrased_question = user_query
+                    intent_reasoning = (
+                        "Detected a data analysis question; skipping intent "
+                        "classification and retrieving the active schema directly."
+                    )
+                    sql_user_query = self._rewrite_query_for_text_to_sql(user_query)
+                    logger.info(
+                        "Skipping intent classification for analytics query_id %s: %s",
+                        query_id,
+                        user_query,
+                    )
+
                 if not api_results:
                     original_user_query = user_query
                     # Only user instructions are kept. Prior SQL samples are not
