@@ -304,16 +304,26 @@ class AsyncQdrantDocumentStore(QdrantDocumentStore):
         filters: Optional[Dict[str, Any]] = None,
         top_k: Optional[int] = None,
     ) -> List[Document]:
+        if top_k is not None and top_k <= 0:
+            return []
+
         qdrant_filters = convert_filters_to_qdrant(filters)
         points_list = []
         offset = None
         while True:
+            page_limit = getattr(self, "scroll_size", None) or 10_000
+            if top_k is not None:
+                remaining = top_k - len(points_list)
+                if remaining <= 0:
+                    break
+                page_limit = min(page_limit, remaining)
+
             try:
                 points = await self.async_client.scroll(
                     collection_name=self.index,
                     offset=offset,
                     scroll_filter=qdrant_filters,
-                    limit=top_k,
+                    limit=page_limit,
                 )
             except Exception as err:
                 if _is_missing_collection_error(err):
@@ -324,6 +334,9 @@ class AsyncQdrantDocumentStore(QdrantDocumentStore):
                     return []
                 raise
             points_list.extend(points[0])
+            if top_k is not None and len(points_list) >= top_k:
+                points_list = points_list[:top_k]
+                break
             if points[1] is None:
                 break
             offset = points[1]
@@ -467,14 +480,20 @@ class AsyncQdrantEmbeddingRetriever(QdrantEmbeddingRetriever):
             docs = await self._document_store._query_by_embedding(
                 query_embedding=query_embedding,
                 filters=filters or self._filters,
-                top_k=top_k or self._top_k,
-                scale_score=scale_score or self._scale_score,
-                return_embedding=return_embedding or self._return_embedding,
+                top_k=top_k if top_k is not None else self._top_k,
+                scale_score=(
+                    scale_score if scale_score is not None else self._scale_score
+                ),
+                return_embedding=(
+                    return_embedding
+                    if return_embedding is not None
+                    else self._return_embedding
+                ),
             )
         else:
             docs = await self._document_store._query_by_filters(
-                filters=filters,
-                top_k=top_k,
+                filters=filters or self._filters,
+                top_k=top_k if top_k is not None else self._top_k,
             )
 
         return {"documents": docs}

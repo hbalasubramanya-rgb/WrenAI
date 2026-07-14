@@ -1176,10 +1176,6 @@ class AskService:
     def _build_schema_grounded_table_question_sql(
         self, query: str, table_ddls: list[str]
     ) -> str | None:
-        # Heuristic SQL skips semantic schema selection and can select a merely
-        # keyword-matching table. Let the scoped SQL-generation pipeline handle it.
-        return None
-
         normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
         if not normalized:
             return None
@@ -1290,10 +1286,6 @@ class AskService:
     def _build_explicit_table_preview_sql(
         self, query: str, table_ddls: list[str]
     ) -> tuple[str, str] | None:
-        # A preview cannot safely infer which fields the user needs. The scoped
-        # generator must choose the required columns instead of emitting SELECT *.
-        return None
-
         normalized_query = re.sub(r"\s+", " ", (query or "").strip())
         if not normalized_query:
             return None
@@ -3451,6 +3443,52 @@ class AskService:
         except TimeoutError as exc:
             raise TimeoutError(f"{label} timed out after {timeout} seconds") from exc
 
+    def _empty_schema_retrieval_result(self) -> dict[str, Any]:
+        return {
+            "construct_retrieval_results": {
+                "retrieval_results": [],
+                "has_calculated_field": False,
+                "has_metric": False,
+                "has_json_field": False,
+                "semantic_analysis": {},
+            }
+        }
+
+    async def _run_schema_retrieval(
+        self,
+        label: str,
+        *,
+        query: str,
+        project_id: Optional[str],
+        histories: list[AskHistory],
+        tables: Optional[list[str]] = None,
+        enable_column_pruning: bool = False,
+        timeout_seconds: Optional[int] = None,
+        query_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        try:
+            return await self._run_with_timeout(
+                label,
+                self._pipelines["db_schema_retrieval"].run(
+                    query=query,
+                    tables=tables,
+                    project_id=project_id,
+                    histories=histories,
+                    enable_column_pruning=enable_column_pruning,
+                ),
+                timeout_seconds=timeout_seconds
+                or self._schema_retrieval_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            logger.warning(
+                "%s timed out; continuing with empty schema retrieval. query_id=%s project_id=%s error=%s",
+                label,
+                query_id,
+                project_id,
+                exc,
+            )
+            return self._empty_schema_retrieval_result()
+
     def _build_greeting_response(self, query: str) -> str:
         return (
             f"Hi. I can help with questions about your active datasource and Wren AI.\n\n"
@@ -3837,20 +3875,14 @@ class AskService:
                         trace_id=trace_id,
                         is_followup=True if histories else False,
                     )
-                    retrieval_result = await self._run_with_timeout(
+                    retrieval_result = await self._run_schema_retrieval(
                         "Explicit table schema retrieval",
-                        self._pipelines["db_schema_retrieval"].run(
-                            query=user_query,
-                            tables=explicit_table_names,
-                            project_id=ask_request.project_id,
-                            histories=histories,
-                            enable_column_pruning=True,
-                        ),
-                        timeout_seconds=min(
-                            self._schema_retrieval_timeout_seconds,
-                            self._pipeline_timeout_seconds,
-                            20,
-                        ),
+                        query=user_query,
+                        tables=explicit_table_names,
+                        project_id=ask_request.project_id,
+                        histories=histories,
+                        enable_column_pruning=enable_column_pruning,
+                        query_id=query_id,
                     )
                     documents, table_names, table_ddls = (
                         self._extract_retrieval_metadata(retrieval_result)
@@ -3946,14 +3978,13 @@ class AskService:
                         trace_id=trace_id,
                         is_followup=True if histories else False,
                     )
-                    retrieval_result = await self._run_with_timeout(
+                    retrieval_result = await self._run_schema_retrieval(
                         "Schema retrieval",
-                        self._pipelines["db_schema_retrieval"].run(
-                            query=user_query,
-                            histories=histories,
-                            project_id=ask_request.project_id,
-                            enable_column_pruning=True,
-                        ),
+                        query=user_query,
+                        project_id=ask_request.project_id,
+                        histories=histories,
+                        enable_column_pruning=enable_column_pruning,
+                        query_id=query_id,
                     )
                     documents, table_names, table_ddls = (
                         self._extract_retrieval_metadata(retrieval_result)
@@ -4216,16 +4247,14 @@ class AskService:
                     is_followup=True if histories else False,
                 )
 
-                retrieval_result = await self._run_with_timeout(
+                retrieval_result = await self._run_schema_retrieval(
                     "Schema retrieval",
-                    self._pipelines["db_schema_retrieval"].run(
-                        query=sql_user_query,
-                        tables=retrieval_table_names,
-                        histories=histories,
-                        project_id=ask_request.project_id,
-                        enable_column_pruning=True,
-                    ),
-                    timeout_seconds=self._schema_retrieval_timeout_seconds,
+                    query=sql_user_query,
+                    tables=retrieval_table_names,
+                    histories=histories,
+                    project_id=ask_request.project_id,
+                    enable_column_pruning=enable_column_pruning,
+                    query_id=query_id,
                 )
                 _retrieval_result = retrieval_result.get(
                     "construct_retrieval_results", {}
@@ -4244,16 +4273,14 @@ class AskService:
                             query_id,
                             explicit_table_names,
                         )
-                        retrieval_result = await self._run_with_timeout(
+                        retrieval_result = await self._run_schema_retrieval(
                             "Explicit table schema retrieval",
-                            self._pipelines["db_schema_retrieval"].run(
-                                query=user_query,
-                                tables=explicit_table_names,
-                                project_id=ask_request.project_id,
-                                histories=histories,
-                                enable_column_pruning=True,
-                            ),
-                            timeout_seconds=self._schema_retrieval_timeout_seconds,
+                            query=user_query,
+                            tables=explicit_table_names,
+                            project_id=ask_request.project_id,
+                            histories=histories,
+                            enable_column_pruning=enable_column_pruning,
+                            query_id=query_id,
                         )
                         _retrieval_result = retrieval_result.get(
                             "construct_retrieval_results", {}
@@ -4663,16 +4690,14 @@ class AskService:
                             query_id,
                         )
                         try:
-                            retry_retrieval_result = await self._run_with_timeout(
+                            retry_retrieval_result = await self._run_schema_retrieval(
                                 "Semantic schema retrieval retry",
-                                self._pipelines["db_schema_retrieval"].run(
-                                    query=semantic_retry_query,
-                                    tables=table_names or retrieval_table_names,
-                                    histories=histories,
-                                    project_id=ask_request.project_id,
-                                    enable_column_pruning=True,
-                                ),
-                                timeout_seconds=self._schema_retrieval_timeout_seconds,
+                                query=semantic_retry_query,
+                                tables=table_names or retrieval_table_names,
+                                histories=histories,
+                                project_id=ask_request.project_id,
+                                enable_column_pruning=enable_column_pruning,
+                                query_id=query_id,
                             )
                             retry_construct_result = retry_retrieval_result.get(
                                 "construct_retrieval_results", {}

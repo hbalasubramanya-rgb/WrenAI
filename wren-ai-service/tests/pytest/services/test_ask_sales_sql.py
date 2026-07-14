@@ -1,3 +1,5 @@
+import pytest
+
 from src.web.v1.services.ask import AskRequest, AskService
 
 
@@ -9,6 +11,76 @@ def test_ask_request_accepts_explicit_tables_setting():
     )
 
     assert request.explicit_tables == ["dbo_failure_patterns"]
+
+
+@pytest.mark.asyncio
+async def test_run_schema_retrieval_uses_configured_timeout_and_pruning_setting():
+    class Retrieval:
+        def __init__(self):
+            self.kwargs = None
+
+        async def run(self, **kwargs):
+            self.kwargs = kwargs
+            return {
+                "construct_retrieval_results": {
+                    "retrieval_results": [],
+                    "semantic_analysis": {},
+                }
+            }
+
+    retrieval = Retrieval()
+    service = AskService(
+        {"db_schema_retrieval": retrieval},
+        schema_retrieval_timeout_seconds=37,
+    )
+    captured = {}
+
+    async def fake_run_with_timeout(label, coroutine, timeout_seconds=None):
+        captured["label"] = label
+        captured["timeout_seconds"] = timeout_seconds
+        return await coroutine
+
+    service._run_with_timeout = fake_run_with_timeout
+
+    await service._run_schema_retrieval(
+        "Schema retrieval",
+        query="show orders",
+        tables=["orders"],
+        project_id="project-1",
+        histories=[],
+        enable_column_pruning=False,
+        query_id="query-1",
+    )
+
+    assert captured == {
+        "label": "Schema retrieval",
+        "timeout_seconds": 37,
+    }
+    assert retrieval.kwargs["tables"] == ["orders"]
+    assert retrieval.kwargs["enable_column_pruning"] is False
+
+
+@pytest.mark.asyncio
+async def test_run_schema_retrieval_timeout_returns_empty_payload():
+    class TimeoutRetrieval:
+        async def run(self, **kwargs):
+            raise TimeoutError("slow schema lookup")
+
+    service = AskService(
+        {"db_schema_retrieval": TimeoutRetrieval()},
+        schema_retrieval_timeout_seconds=1,
+    )
+
+    result = await service._run_schema_retrieval(
+        "Schema retrieval",
+        query="show orders",
+        project_id="project-1",
+        histories=[],
+        timeout_seconds=1,
+        query_id="query-1",
+    )
+
+    assert result == service._empty_schema_retrieval_result()
 
 
 def test_normalize_explicit_table_names_adds_deployed_schema_candidate():
