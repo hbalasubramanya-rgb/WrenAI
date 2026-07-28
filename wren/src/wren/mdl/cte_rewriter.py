@@ -16,6 +16,7 @@ from sqlglot import exp, parse_one
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 from sqlglot.optimizer.qualify_columns import qualify_columns
 from sqlglot.optimizer.qualify_tables import qualify_tables
+from sqlglot.optimizer.scope import traverse_scope
 from sqlglot.schema import MappingSchema
 
 # Ensure the Wren dialect is registered with sqlglot on import.
@@ -172,6 +173,13 @@ class CTERewriter:
             if model_name:
                 used[model_name][col.name] = None
 
+        for model_name, columns in self._collect_scope_model_columns(
+            copy, user_cte_names
+        ).items():
+            model_columns = used.setdefault(model_name, {})
+            for column in columns:
+                model_columns[column] = None
+
         return {m: None if m in star_models else list(cols) for m, cols in used.items()}
 
     # ------------------------------------------------------------------
@@ -214,7 +222,8 @@ class CTERewriter:
         if not model_ctes:
             return
 
-        existing_with = ast.args.get("with_")
+        with_key = "with_" if "with_" in ast.arg_types else "with"
+        existing_with = ast.args.get(with_key)
 
         if existing_with:
             # Prepend model CTEs before user CTEs
@@ -223,10 +232,10 @@ class CTERewriter:
             existing_with.set("expressions", all_ctes)
         else:
             with_clause = exp.With(expressions=model_ctes)
-            ast.set("with_", with_clause)
+            ast.set(with_key, with_clause)
 
         # Preserve RECURSIVE if the original WITH had it
-        final_with = ast.args.get("with_")
+        final_with = ast.args.get(with_key)
         if existing_with and existing_with.args.get("recursive"):
             final_with.set("recursive", True)
 
@@ -243,33 +252,69 @@ class CTERewriter:
         the referenced model.
         """
         star_models: set[str] = set()
-        select = ast.find(exp.Select)
-        if not select:
-            return star_models
-
-        # Build alias → model mapping from tables in FROM/JOIN
-        alias_to_model: dict[str, str] = {}
-        for table in ast.find_all(exp.Table):
-            name = table.name
-            if name not in self.model_dict or name in user_cte_names:
+        for scope in traverse_scope(ast):
+            select = scope.expression
+            if not isinstance(select, exp.Select):
                 continue
-            alias = table.alias or name
-            alias_to_model[alias] = name
-            alias_to_model[name] = name
 
-        for sel_expr in select.expressions:
-            if isinstance(sel_expr, exp.Star):
-                # Bare * → all models
-                star_models.update(alias_to_model.values())
-            elif isinstance(sel_expr, exp.Column) and isinstance(
-                sel_expr.this, exp.Star
-            ):
-                # table.* → specific model
-                table_ref = sel_expr.table
-                if table_ref and table_ref in alias_to_model:
-                    star_models.add(alias_to_model[table_ref])
+            alias_to_model = self._scope_alias_to_model(scope, user_cte_names)
+            for sel_expr in select.expressions:
+                if isinstance(sel_expr, exp.Star):
+                    star_models.update(alias_to_model.values())
+                elif isinstance(sel_expr, exp.Column) and isinstance(
+                    sel_expr.this, exp.Star
+                ):
+                    table_ref = sel_expr.table
+                    if table_ref and table_ref in alias_to_model:
+                        star_models.add(alias_to_model[table_ref])
 
         return star_models
+
+    def _collect_scope_model_columns(
+        self, ast: exp.Expression, user_cte_names: set[str]
+    ) -> dict[str, dict[str, None]]:
+        used: dict[str, dict[str, None]] = {}
+
+        for scope in traverse_scope(ast):
+            alias_to_model = self._scope_alias_to_model(scope, user_cte_names)
+            for model_name in alias_to_model.values():
+                used.setdefault(model_name, {})
+
+            if not alias_to_model:
+                continue
+
+            for col in scope.columns:
+                table_ref = col.table
+                model_name = alias_to_model.get(table_ref) if table_ref else None
+                unique_models = list(dict.fromkeys(alias_to_model.values()))
+                if model_name is None and len(unique_models) == 1:
+                    candidate_model = unique_models[0]
+                    model_columns = self._col_orig_name.get(candidate_model, {})
+                    if col.name.lower() in model_columns:
+                        model_name = candidate_model
+
+                if model_name:
+                    used.setdefault(model_name, {})[col.name] = None
+
+        return used
+
+    def _scope_alias_to_model(
+        self, scope, user_cte_names: set[str]
+    ) -> dict[str, str]:
+        alias_to_model: dict[str, str] = {}
+
+        for alias, (_, source) in scope.selected_sources.items():
+            if not isinstance(source, exp.Table):
+                continue
+
+            model_name = source.name
+            if model_name not in self.model_dict or model_name in user_cte_names:
+                continue
+
+            alias_to_model[alias] = model_name
+            alias_to_model[model_name] = model_name
+
+        return alias_to_model
 
     @staticmethod
     def _collect_user_cte_names(ast: exp.Expression) -> set[str]:

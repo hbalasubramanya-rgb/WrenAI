@@ -103,7 +103,7 @@ def _make_rewriter(
 def _has_cte(sql: str, cte_name: str, dialect: str = "duckdb") -> bool:
     """Return True if *sql* contains a CTE named *cte_name*."""
     ast = sqlglot.parse_one(sql, dialect=dialect)
-    with_clause = ast.args.get("with_")
+    with_clause = ast.args.get("with_") or ast.args.get("with")
     if not with_clause:
         return False
     for cte in with_clause.expressions:
@@ -115,7 +115,7 @@ def _has_cte(sql: str, cte_name: str, dialect: str = "duckdb") -> bool:
 
 def _count_ctes(sql: str, dialect: str = "duckdb") -> int:
     ast = sqlglot.parse_one(sql, dialect=dialect)
-    with_clause = ast.args.get("with_")
+    with_clause = ast.args.get("with_") or ast.args.get("with")
     if not with_clause:
         return 0
     return len(with_clause.expressions)
@@ -124,7 +124,7 @@ def _count_ctes(sql: str, dialect: str = "duckdb") -> int:
 def _cte_body_sql(sql: str, cte_name: str, dialect: str = "duckdb") -> str | None:
     """Return the SQL body of a named CTE, or None if not found."""
     ast = sqlglot.parse_one(sql, dialect=dialect)
-    with_clause = ast.args.get("with_")
+    with_clause = ast.args.get("with_") or ast.args.get("with")
     if not with_clause:
         return None
     for cte in with_clause.expressions:
@@ -237,8 +237,9 @@ class TestCTEEdgeCases:
         assert _has_cte(result, "summary")
         # Model CTE should come before user CTE
         ast = sqlglot.parse_one(result, dialect="duckdb")
+        with_clause = ast.args.get("with_") or ast.args.get("with")
         cte_names = [
-            cte.args["alias"].this.name for cte in ast.args["with_"].expressions
+            cte.args["alias"].this.name for cte in with_clause.expressions
         ]
         assert cte_names.index("orders") < cte_names.index("summary")
 
@@ -299,7 +300,8 @@ class TestCTEEdgeCases:
         assert _has_cte(result, "hierarchy")
         # RECURSIVE keyword must be preserved
         ast = sqlglot.parse_one(result, dialect="duckdb")
-        assert ast.args["with_"].args.get("recursive")
+        with_clause = ast.args.get("with_") or ast.args.get("with")
+        assert with_clause.args.get("recursive")
 
     def test_no_model_references_fallback(self):
         """Query referencing no models falls back to direct transform_sql."""
@@ -308,6 +310,23 @@ class TestCTEEdgeCases:
         # and the fallback transform_sql will also fail.
         with pytest.raises(Exception):
             rw.rewrite("SELECT * FROM unknown_table")
+
+    def test_union_collects_columns_from_each_branch(self):
+        """Set-operation branches should each contribute model columns."""
+        rw = _make_rewriter(_MULTI_MODEL_MANIFEST)
+        result = rw.rewrite(
+            'SELECT o_orderkey FROM "orders" '
+            'UNION SELECT c_custkey FROM "customer"'
+        )
+
+        orders_body = _cte_body_sql(result, "orders")
+        customer_body = _cte_body_sql(result, "customer")
+
+        assert orders_body is not None
+        assert customer_body is not None
+        assert "o_orderkey" in orders_body
+        assert "c_custkey" in customer_body
+        assert "SELECT 1" not in customer_body
 
 
 # ---------------------------------------------------------------------------
