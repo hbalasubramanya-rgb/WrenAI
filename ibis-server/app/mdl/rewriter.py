@@ -3,6 +3,8 @@ import importlib
 import httpx
 import sqlglot
 from anyio import to_thread
+from sqlglot import exp
+from sqlglot.optimizer.scope import build_scope
 from loguru import logger
 from opentelemetry import trace
 
@@ -17,6 +19,7 @@ from app.mdl.core import (
 from app.mdl.java_engine import JavaEngineConnector
 from app.model.data_source import DataSource
 from app.model.error import PLANNED_SQL, ErrorCode, ErrorPhase, WrenError
+from app.util import base64_to_dict
 
 # To register custom dialects from ibis library for sqlglot
 importlib.import_module("ibis.backends.sql.dialects")
@@ -25,6 +28,49 @@ importlib.import_module("ibis.backends.sql.dialects")
 importlib.import_module("app.custom_sqlglot.dialects")
 
 tracer = trace.get_tracer(__name__)
+
+
+def rewrite_mssql_logical_tables_to_physical(sql: str, manifest_str: str) -> str:
+    manifest = base64_to_dict(manifest_str)
+    models = {
+        model.get("name"): model
+        for model in manifest.get("models", [])
+        if model.get("name") and (model.get("tableReference") or {}).get("table")
+    }
+    if not models:
+        return sql
+
+    ast = sqlglot.parse_one(sql, dialect="tsql")
+    root = build_scope(ast)
+    if root is None:
+        return sql
+
+    for scope in root.traverse():
+        for alias, (_node, source) in scope.selected_sources.items():
+            if not isinstance(source, exp.Table):
+                continue
+
+            model = models.get(source.name)
+            if model is None:
+                continue
+
+            table_ref = model["tableReference"]
+            source.replace(
+                exp.Table(
+                    this=_quoted_identifier(table_ref["table"]),
+                    db=_quoted_identifier(table_ref["schema"])
+                    if table_ref.get("schema")
+                    else None,
+                    alias=source.args.get("alias")
+                    or exp.TableAlias(this=_quoted_identifier(alias)),
+                )
+            )
+
+    return ast.sql(dialect="tsql")
+
+
+def _quoted_identifier(value: str) -> exp.Identifier:
+    return exp.to_identifier(value, quoted=True)
 
 
 class Rewriter:
@@ -71,6 +117,10 @@ class Rewriter:
         planned_sql = await self._rewriter.rewrite(manifest_str, sql, self.properties)
         logger.debug("Planned SQL: {}", planned_sql)
         dialect_sql = self._transpile(planned_sql) if self.data_source else planned_sql
+        if self.data_source == DataSource.mssql:
+            dialect_sql = rewrite_mssql_logical_tables_to_physical(
+                dialect_sql, manifest_str
+            )
         logger.debug("Dialect SQL: {}", dialect_sql)
         return dialect_sql
 
