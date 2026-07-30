@@ -119,7 +119,7 @@ class Rewriter:
         dialect_sql = self._transpile(planned_sql) if self.data_source else planned_sql
         if self.data_source == DataSource.mssql:
             dialect_sql = rewrite_mssql_logical_tables_to_physical(
-                dialect_sql, manifest_str
+                dialect_sql, self.manifest_str
             )
         logger.debug("Dialect SQL: {}", dialect_sql)
         return dialect_sql
