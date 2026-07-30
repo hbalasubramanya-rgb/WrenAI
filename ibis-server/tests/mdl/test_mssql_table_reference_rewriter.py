@@ -9,7 +9,8 @@ def test_rewrite_mssql_logical_tables_to_physical_uses_manifest_table_reference(
     logical_model = "logical_model"
     physical_schema = "physical_schema"
     physical_table = "physical_table"
-    column_name = "Column With Spaces"
+    logical_column = "logical_column"
+    physical_column = "Column With Spaces"
     manifest = {
         "models": [
             {
@@ -18,19 +19,25 @@ def test_rewrite_mssql_logical_tables_to_physical_uses_manifest_table_reference(
                     "schema": physical_schema,
                     "table": physical_table,
                 },
+                "columns": [
+                    {
+                        "name": logical_column,
+                        "type": "VARCHAR",
+                        "expression": f'"{physical_column}"',
+                    }
+                ],
             }
         ]
     }
     manifest_str = base64.b64encode(orjson.dumps(manifest)).decode("utf-8")
 
     rewritten = rewrite_mssql_logical_tables_to_physical(
-        f'SELECT "{logical_model}"."{column_name}" FROM "{logical_model}"',
+        f'SELECT "{logical_model}"."{logical_column}" FROM "{logical_model}"',
         manifest_str,
     )
 
     assert (
-        rewritten
-        == "SELECT [logical_model].[Column With Spaces] "
+        rewritten == "SELECT [logical_model].[Column With Spaces] "
         "FROM [physical_schema].[physical_table] AS [logical_model]"
     )
 
@@ -105,4 +112,109 @@ def test_rewrite_mssql_logical_tables_to_physical_rewrites_all_manifest_models()
         "AS [first_logical_model] UNION ALL SELECT * FROM "
         "[second_physical_schema].[second_physical_table] "
         "AS [second_logical_model]"
+    )
+
+
+def test_rewrite_mssql_logical_tables_to_physical_rewrites_unqualified_logical_columns():
+    logical_model = "logical_model"
+    logical_column = "logical_column"
+    physical_column = "Physical Column"
+    manifest = {
+        "models": [
+            {
+                "name": logical_model,
+                "tableReference": {
+                    "schema": "physical_schema",
+                    "table": "physical_table",
+                },
+                "columns": [
+                    {
+                        "name": logical_column,
+                        "type": "VARCHAR",
+                        "expression": f'"{physical_column}"',
+                    }
+                ],
+            }
+        ]
+    }
+    manifest_str = base64.b64encode(orjson.dumps(manifest)).decode("utf-8")
+
+    rewritten = rewrite_mssql_logical_tables_to_physical(
+        f'SELECT "{logical_column}" FROM "{logical_model}"',
+        manifest_str,
+    )
+
+    assert (
+        rewritten == "SELECT [Physical Column] "
+        "FROM [physical_schema].[physical_table] AS [logical_model]"
+    )
+
+
+def test_rewrite_mssql_logical_tables_to_physical_uses_manifest_source_column_property():
+    logical_model = "logical_model"
+    logical_column = "logical_column"
+    physical_column = "Physical Column"
+    manifest = {
+        "models": [
+            {
+                "name": logical_model,
+                "tableReference": {
+                    "schema": "physical_schema",
+                    "table": "physical_table",
+                },
+                "columns": [
+                    {
+                        "name": logical_column,
+                        "type": "VARCHAR",
+                        "properties": {"sourceColumnName": physical_column},
+                    }
+                ],
+            }
+        ]
+    }
+    manifest_str = base64.b64encode(orjson.dumps(manifest)).decode("utf-8")
+
+    rewritten = rewrite_mssql_logical_tables_to_physical(
+        f'SELECT "{logical_model}"."{logical_column}" FROM "{logical_model}"',
+        manifest_str,
+    )
+
+    assert (
+        rewritten == "SELECT [logical_model].[Physical Column] "
+        "FROM [physical_schema].[physical_table] AS [logical_model]"
+    )
+
+
+def test_rewrite_mssql_logical_tables_to_physical_keeps_calculated_expressions():
+    logical_model = "logical_model"
+    logical_column = "logical_column"
+    manifest = {
+        "models": [
+            {
+                "name": logical_model,
+                "tableReference": {
+                    "schema": "physical_schema",
+                    "table": "physical_table",
+                },
+                "columns": [
+                    {
+                        "name": logical_column,
+                        "type": "VARCHAR",
+                        "isCalculated": True,
+                        "expression": "upper(other_column)",
+                    }
+                ],
+            }
+        ]
+    }
+    manifest_str = base64.b64encode(orjson.dumps(manifest)).decode("utf-8")
+
+    rewritten = rewrite_mssql_logical_tables_to_physical(
+        f'SELECT "{logical_model}"."{logical_column}" FROM "{logical_model}"',
+        manifest_str,
+    )
+
+    assert (
+        rewritten == "SELECT [logical_model].[logical_column] "
+        "FROM [physical_schema].[physical_table] AS [logical_model]"
     )

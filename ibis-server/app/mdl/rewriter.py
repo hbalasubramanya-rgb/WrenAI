@@ -32,11 +32,7 @@ tracer = trace.get_tracer(__name__)
 
 def rewrite_mssql_logical_tables_to_physical(sql: str, manifest_str: str) -> str:
     manifest = base64_to_dict(manifest_str)
-    models = {
-        model.get("name"): model
-        for model in manifest.get("models", [])
-        if model.get("name") and (model.get("tableReference") or {}).get("table")
-    }
+    models = _mssql_table_reference_models(manifest)
     if not models:
         return sql
 
@@ -46,6 +42,7 @@ def rewrite_mssql_logical_tables_to_physical(sql: str, manifest_str: str) -> str
         return sql
 
     for scope in root.traverse():
+        models_by_alias = {}
         for alias, (_node, source) in scope.selected_sources.items():
             if not isinstance(source, exp.Table):
                 continue
@@ -54,6 +51,7 @@ def rewrite_mssql_logical_tables_to_physical(sql: str, manifest_str: str) -> str
             if model is None:
                 continue
 
+            models_by_alias[alias] = model
             table_ref = model["tableReference"]
             source.replace(
                 exp.Table(
@@ -66,7 +64,79 @@ def rewrite_mssql_logical_tables_to_physical(sql: str, manifest_str: str) -> str
                 )
             )
 
+        _rewrite_mssql_logical_columns_to_physical(scope, models_by_alias)
+
     return ast.sql(dialect="tsql")
+
+
+
+def _mssql_table_reference_models(manifest: dict) -> dict[str, dict]:
+    models = {}
+    for model in manifest.get("models", []):
+        name = model.get("name")
+        table_ref = model.get("tableReference") or {}
+        if not name or not table_ref.get("table"):
+            continue
+
+        model = model.copy()
+        model["_physical_columns_by_logical_name"] = {
+            column["name"]: physical_column
+            for column in model.get("columns", [])
+            if column.get("name")
+            and not column.get("isCalculated")
+            and (physical_column := _physical_column_name(column))
+        }
+        models[name] = model
+
+    return models
+
+
+
+def _physical_column_name(column: dict) -> str | None:
+    return _direct_column_expression_name(column) or (
+        column.get("properties") or {}
+    ).get("sourceColumnName")
+
+
+
+def _direct_column_expression_name(column: dict) -> str | None:
+    expression = column.get("expression")
+    if not expression:
+        return None
+
+    try:
+        parsed = sqlglot.parse_one(expression, dialect="tsql")
+    except sqlglot.errors.SqlglotError:
+        return None
+
+    if isinstance(parsed, exp.Column) and not parsed.table:
+        return parsed.name
+
+    return None
+
+
+
+def _rewrite_mssql_logical_columns_to_physical(scope, models_by_alias: dict) -> None:
+    if not models_by_alias:
+        return
+
+    unqualified_model = (
+        next(iter(models_by_alias.values())) if len(models_by_alias) == 1 else None
+    )
+    for column in scope.columns:
+        model = (
+            models_by_alias.get(column.table)
+            if column.table
+            else unqualified_model
+        )
+        if not model:
+            continue
+
+        physical_column = model["_physical_columns_by_logical_name"].get(column.name)
+        if not physical_column:
+            continue
+
+        column.set("this", _quoted_identifier(physical_column))
 
 
 def _quoted_identifier(value: str) -> exp.Identifier:
