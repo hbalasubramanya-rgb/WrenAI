@@ -593,12 +593,13 @@ class MSSqlConnector(IbisConnector):
     def query(self, sql: str, limit: int | None = None) -> pa.Table:
         sql = self._flatten_pagination_limit(self._normalize_tsql_for_execution(sql))
         try:
-            with closing(self.connection.raw_sql(sql)) as cur:
-                rows = self._normalize_cursor_rows(cur.fetchall())
-                columns = [
-                    self._cursor_column_name(column, index)
-                    for index, column in enumerate(cur.description or [])
-                ]
+            with self._suppress_null_aggregate_warnings():
+                with closing(self.connection.raw_sql(sql)) as cur:
+                    rows = self._normalize_cursor_rows(cur.fetchall())
+                    columns = [
+                        self._cursor_column_name(column, index)
+                        for index, column in enumerate(cur.description or [])
+                    ]
 
             df = pd.DataFrame(rows, columns=columns)
             if limit is not None:
@@ -617,6 +618,26 @@ class MSSqlConnector(IbisConnector):
                     metadata={DIALECT_SQL: sql},
                 ) from e
             raise
+
+    def _execute_session_statement(self, sql: str) -> None:
+        with suppress(Exception):
+            with closing(self.connection.raw_sql(sql)):
+                pass
+
+    class _MSSqlNullAggregateWarningScope:
+        def __init__(self, connector: "MSSqlConnector"):
+            self._connector = connector
+
+        def __enter__(self):
+            self._connector._execute_session_statement("SET ANSI_WARNINGS OFF")
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self._connector._execute_session_statement("SET ANSI_WARNINGS ON")
+            return False
+
+    def _suppress_null_aggregate_warnings(self):
+        return self._MSSqlNullAggregateWarningScope(self)
 
     def _round_decimal_columns(self, ibis_table: Table, scale: int = 9) -> pa.Table:
         def round_decimal(val):

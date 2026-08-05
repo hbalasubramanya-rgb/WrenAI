@@ -413,6 +413,22 @@ async def test_order_by_without_limit(client, manifest_str, mssql: SqlServerCont
     assert result["data"][2][0] == "three"
 
 
+async def test_aggregate_ignores_null_warning(client, manifest_str, mssql: SqlServerContainer):
+    connection_info = _to_connection_info(mssql)
+    response = await client.post(
+        url=f"{base_url}/query",
+        json={
+            "connectionInfo": connection_info,
+            "manifestStr": manifest_str,
+            "sql": 'SELECT AVG(id) AS avg_id FROM "null_test"',
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["data"][0][0] == 1.5
+
+
 # we dont give the expression a alias on purpose
 async def test_decimal_precision(client, manifest_str, mssql: SqlServerContainer):
     connection_info = _to_connection_info(mssql)
