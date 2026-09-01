@@ -17,10 +17,12 @@ from src.pipelines.generation.utils.sql import (
     construct_ask_history_messages,
     construct_instructions,
     construct_schema_identifier_catalog,
+    generate_simple_analytics_sql,
     get_calculated_field_instructions,
     get_json_field_instructions,
     get_metric_instructions,
     get_sql_generation_system_prompt,
+    unsupported_schema_generation_result,
 )
 from src.pipelines.retrieval.sql_functions import SqlFunction
 from src.pipelines.retrieval.sql_knowledge import SqlKnowledge
@@ -150,7 +152,9 @@ async def post_process(
     generate_sql_in_followup: dict,
     post_processor: SQLGenPostProcessor,
     data_source: str,
-    documents: list[str],
+    query: str | None = None,
+    grounding_query: str | None = None,
+    documents: list[str] | None = None,
     project_id: str | None = None,
     mdl_hash: str | None = None,
     validation_contexts: list[str] | None = None,
@@ -162,6 +166,7 @@ async def post_process(
         project_id=project_id,
         mdl_hash=mdl_hash,
         contexts=validation_contexts or documents,
+        fallback_query=grounding_query or query,
         use_dry_plan=use_dry_plan,
         data_source=data_source,
         allow_dry_plan_fallback=allow_dry_plan_fallback,
@@ -217,6 +222,7 @@ class FollowUpSQLGeneration(BasicPipeline):
         use_dry_plan: bool = False,
         allow_dry_plan_fallback: bool = True,
         sql_knowledge: SqlKnowledge | None = None,
+        grounding_query: str | None = None,
         validation_contexts: list[str] | None = None,
     ):
         logger.info("Follow-Up SQL Generation pipeline is running...")
@@ -227,11 +233,25 @@ class FollowUpSQLGeneration(BasicPipeline):
             )
         else:
             metadata = {}
+        data_source = metadata.get("data_source", "local_file")
+
+        effective_grounding_query = grounding_query or query
+        unsupported_result = unsupported_schema_generation_result(
+            effective_grounding_query,
+            contexts=contexts,
+            data_source=data_source,
+        )
+        if unsupported_result:
+            logger.info(
+                "Follow-up SQL generation skipped before LLM because selected schema does not cover requested concepts."
+            )
+            return {"post_process": unsupported_result}
 
         return await self._pipe.execute(
             ["post_process"],
             inputs={
                 "query": query,
+                "grounding_query": effective_grounding_query,
                 "documents": contexts,
                 "sql_generation_reasoning": sql_generation_reasoning,
                 "histories": histories,
@@ -245,9 +265,67 @@ class FollowUpSQLGeneration(BasicPipeline):
                 "sql_functions": sql_functions,
                 "use_dry_plan": use_dry_plan,
                 "allow_dry_plan_fallback": allow_dry_plan_fallback,
-                "data_source": metadata.get("data_source", "local_file"),
+                "data_source": data_source,
                 "sql_knowledge": sql_knowledge,
                 "validation_contexts": validation_contexts,
                 **self._components,
             },
         )
+
+    async def run_deterministic_fast_path(
+        self,
+        query: str,
+        contexts: list[str],
+        project_id: str | None = None,
+        mdl_hash: str | None = None,
+        use_dry_plan: bool = False,
+        allow_dry_plan_fallback: bool = True,
+        grounding_query: str | None = None,
+    ) -> dict | None:
+        if use_dry_plan:
+            metadata = await retrieve_metadata(
+                project_id or "", self._retriever, mdl_hash
+            )
+        else:
+            metadata = {}
+        data_source = metadata.get("data_source", "local_file")
+        effective_grounding_query = grounding_query or query
+
+        unsupported_result = unsupported_schema_generation_result(
+            effective_grounding_query,
+            contexts=contexts,
+            data_source=data_source,
+        )
+        if unsupported_result:
+            logger.info(
+                "Follow-up SQL deterministic fast path returned unsupported schema before LLM."
+            )
+            return {"post_process": unsupported_result, "fast_path": "unsupported"}
+
+        deterministic_sql = generate_simple_analytics_sql(
+            effective_grounding_query,
+            contexts,
+        )
+        if not deterministic_sql:
+            return None
+
+        logger.info("Follow-up SQL deterministic fast path produced a candidate.")
+        post_process = await self._components["post_processor"].run(
+            [deterministic_sql],
+            project_id=project_id,
+            mdl_hash=mdl_hash,
+            contexts=contexts,
+            fallback_query=effective_grounding_query,
+            use_dry_plan=use_dry_plan,
+            data_source=data_source,
+            allow_dry_plan_fallback=allow_dry_plan_fallback,
+        )
+        if post_process.get("valid_generation_result"):
+            logger.info("Follow-up SQL deterministic fast path accepted candidate.")
+            return {"post_process": post_process, "fast_path": "deterministic"}
+
+        logger.info(
+            "Follow-up SQL deterministic fast path rejected candidate; continuing to LLM. reason=%s",
+            post_process.get("invalid_generation_result", {}).get("error"),
+        )
+        return None

@@ -40,7 +40,10 @@ class Helper:
         return self.helper(column, **kwargs)
 
 
-def normalize_semantic_properties(props: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_semantic_properties(
+    props: Dict[str, Any],
+    include_source_column_name: bool = False,
+) -> Dict[str, Any]:
     if not isinstance(props, dict):
         props = {}
 
@@ -48,6 +51,8 @@ def normalize_semantic_properties(props: Dict[str, Any]) -> Dict[str, Any]:
         "alias": clean_display_name(props.get("displayName", "")),
         "description": props.get("description", ""),
     }
+    if include_source_column_name:
+        semantic_properties["sourceColumnName"] = props.get("sourceColumnName", "")
 
     for key in SEMANTIC_METADATA_KEYS:
         value = props.get(key)
@@ -59,7 +64,10 @@ def normalize_semantic_properties(props: Dict[str, Any]) -> Dict[str, Any]:
 
 def _properties_comment(column: Dict[str, Any], **_) -> str:
     props = column["properties"]
-    column_properties = normalize_semantic_properties(props)
+    column_properties = normalize_semantic_properties(
+        props,
+        include_source_column_name=True,
+    )
 
     # Add any nested columns if they exist
     nested = {k: v for k, v in props.items() if k.startswith("nested")}
