@@ -7,19 +7,44 @@ for making changes locally, pushing them, and manually deploying them to the dev
 server. It intentionally contains no passwords, API keys, tokens, or database
 connection-string values.
 
-## Critical Current-State Warnings
+## Codex Continuation Checkpoint
 
-The live dev checkout is not currently ready for a normal `git pull --ff-only`:
+The one-time branch and access repair was completed on 2026-09-15:
 
 - Live root branch: `organization/ask-schema-grounding-20260820`
-- Live root HEAD: `5179591dff4356cca36bc2417fd43d4e86856a39`
-- Relative to its cached origin ref at audit time: ahead 2, behind 90
-- Server-only commits:
-  - `5179591df Optimize schema-grounded Ask pipeline`
-  - `0ff1e6e23 Improve Ask schema grounding`
-- Remote branch tip at audit time: `67dd42f984d3524e51fd336d765740776592a91c`
-- The live checkout contains tracked changes and more than 100,000 untracked
-  runtime/build files.
+- The live branch was aligned with its remote at `04563b4a1`, the commit that
+  first added this handoff. It was `0` ahead and `0` behind after reconciliation.
+- The previous live HEAD is preserved locally on branch
+  `backup/dev-before-local-workflow-20260915` at
+  `5179591dff4356cca36bc2417fd43d4e86856a39`.
+- A user-triggered conflicted merge was aborted before reconciliation; there is
+  no merge in progress.
+- `INT\v_skumard` and `INT\v_sjanardhan` have inherited Modify access to
+  `D:\WrenAI`, including its Git metadata.
+- Both users' global Git configuration marks the root and the two nested engine
+  repositories as safe directories.
+- `git submodule absorbgitdirs` migrated the two embedded engine Git directories
+  into the standard `.git\modules` layout. Recursive fetch now succeeds.
+- Windows executable-bit noise is suppressed with local `core.fileMode=false`.
+- AI Service and UI were restarted after reconciliation. Qdrant, Wren Engine,
+  Ibis, AI Service, and UI all returned HTTP 200 afterward.
+- No dependency lock files or database migrations changed during the
+  reconciliation, so no dependency install or migration was needed.
+- The root checkout still contains more than 100,000 untracked runtime/build
+  files. They must not be committed or cleaned.
+
+At the start of a future session, verify rather than assume the current state:
+
+```powershell
+Set-Location D:\WrenAI
+git fetch --recurse-submodules=no origin organization/ask-schema-grounding-20260820
+git status --short --branch --untracked-files=no
+git rev-list --left-right --count HEAD...origin/organization/ask-schema-grounding-20260820
+```
+
+The expected divergence count after a completed deployment is `0 0`. A root
+`wren-engine` modification remains expected because of the non-standard engine
+checkout described below.
 
 The `wren-engine` layout on dev is also non-standard:
 
@@ -422,7 +447,11 @@ All five returned HTTP 200 on dev during the audit. The Java health route is
 
 ## B. Manual Dev Deployment
 
-### B1. One-time branch reconciliation
+### B1. One-time branch reconciliation (completed 2026-09-15)
+
+Do not repeat this procedure merely because the expected `wren-engine`
+submodule modification or untracked runtime files are present. It is retained
+as recovery/reference guidance for a future genuine branch divergence.
 
 Perform this once before the first deployment under the new workflow:
 
