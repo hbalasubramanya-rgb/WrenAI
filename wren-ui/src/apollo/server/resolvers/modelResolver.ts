@@ -43,6 +43,26 @@ const dirtyProjectIds = new Set<number>();
 const isSameId = (left: string | number, right: string | number) =>
   String(left) === String(right);
 
+const firstNonEmptyString = (...values: unknown[]) =>
+  values.find(
+    (value): value is string =>
+      typeof value === 'string' && value.trim().length > 0,
+  ) || '';
+
+const normalizeModelDisplayName = (model: Model) =>
+  firstNonEmptyString(
+    model.displayName,
+    model.referenceName,
+    model.sourceTableName,
+  );
+
+const normalizeColumnDisplayName = (column: ModelColumn) =>
+  firstNonEmptyString(
+    column.displayName,
+    column.referenceName,
+    column.sourceColumnName,
+  );
+
 export enum SyncStatusEnum {
   IN_PROGRESS = 'IN_PROGRESS',
   SYNCRONIZED = 'SYNCRONIZED',
@@ -728,15 +748,27 @@ export class ModelResolver {
         .filter((c) => c.modelId === model.id)
         .map((c) => ({
           ...c,
+          displayName: normalizeColumnDisplayName(c),
           properties: JSON.parse(c.properties),
           nestedColumns: c.type.includes('STRUCT')
-            ? modelNestedColumnList.filter((nc) => nc.columnId === c.id)
+            ? modelNestedColumnList
+                .filter((nc) => nc.columnId === c.id)
+                .map((nc) => ({
+                  ...nc,
+                  displayName: firstNonEmptyString(
+                    nc.displayName,
+                    nc.referenceName,
+                    nc.sourceColumnName,
+                    nc.columnPath?.join('.'),
+                  ),
+                }))
             : undefined,
         }));
       const fields = modelFields.filter((c) => !c.isCalculated);
       const calculatedFields = modelFields.filter((c) => c.isCalculated);
       result.push({
         ...model,
+        displayName: normalizeModelDisplayName(model),
         fields,
         calculatedFields,
         properties: {
@@ -763,9 +795,20 @@ export class ModelResolver {
 
     const columns = modelColumns.map((c) => ({
       ...c,
+      displayName: normalizeColumnDisplayName(c),
       properties: JSON.parse(c.properties),
       nestedColumns: c.type.includes('STRUCT')
-        ? modelNestedColumns.filter((nc) => nc.columnId === c.id)
+        ? modelNestedColumns
+            .filter((nc) => nc.columnId === c.id)
+            .map((nc) => ({
+              ...nc,
+              displayName: firstNonEmptyString(
+                nc.displayName,
+                nc.referenceName,
+                nc.sourceColumnName,
+                nc.columnPath?.join('.'),
+              ),
+            }))
         : undefined,
     }));
     const relations = (
@@ -780,6 +823,7 @@ export class ModelResolver {
 
     return {
       ...model,
+      displayName: normalizeModelDisplayName(model),
       fields: columns.filter((c) => !c.isCalculated),
       calculatedFields: columns.filter((c) => c.isCalculated),
       relations,
@@ -1427,6 +1471,7 @@ export class ModelResolver {
     args: { data: PreviewSQLData },
     ctx: IContext,
   ) {
+    const startedAt = Date.now();
     const { sql, projectId, hash, limit, dryRun } = args.data;
     const project = projectId
       ? await ctx.projectService.getProjectById(parseInt(projectId))
@@ -1439,13 +1484,19 @@ export class ModelResolver {
         'Project has not been deployed successfully yet. Deploy the model before previewing or validating SQL.',
       );
     }
-    return await ctx.queryService.preview(sql, {
+    const result = await ctx.queryService.preview(sql, {
       project,
       limit: limit,
       modelingOnly: false,
       manifest,
       dryRun,
     });
+    logger.info(
+      `Ask timing stage=preview_sql_request project_id=${project.id} dry_run=${
+        dryRun ?? false
+      } elapsed_ms=${Date.now() - startedAt}`,
+    );
+    return result;
   }
 
   public async dryPlanSql(

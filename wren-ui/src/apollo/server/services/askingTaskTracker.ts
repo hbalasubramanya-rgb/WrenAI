@@ -101,8 +101,27 @@ export class AskingTaskTracker implements IAskingTaskTracker {
     input: CreateAskingTaskInput,
   ): Promise<{ queryId: string }> {
     try {
+      logger.info(
+        `Creating asking task request: ${JSON.stringify({
+          projectId: input.projectId ?? null,
+          deployId: input.deployId ?? null,
+          hasHistories: !!input.histories?.length,
+          historyCount: input.histories?.length ?? 0,
+          rerunFromCancelled: !!input.rerunFromCancelled,
+          previousTaskId: input.previousTaskId ?? null,
+          threadResponseId: input.threadResponseId ?? null,
+          question: input.query,
+        })}`,
+      );
       // Call the AI service to create a task
+      const startedAt = Date.now();
+      const aiRequestStartedAt = Date.now();
       const response = await this.wrenAIAdaptor.ask(input);
+      logger.info(
+        `Ask timing stage=task_creation_ai_request project_id=${
+          input.projectId ?? ''
+        } elapsed_ms=${Date.now() - aiRequestStartedAt}`,
+      );
       const queryId = response.queryId;
 
       // validate the input
@@ -159,19 +178,38 @@ export class AskingTaskTracker implements IAskingTaskTracker {
           detail: task.result,
         });
       } else {
+        const dbStartedAt = Date.now();
         const createdTask = await this.askingTaskRepository.createOne({
           queryId,
           question: input.query,
           detail: task.result,
         });
+        logger.info(
+          `Ask timing stage=task_creation_db project_id=${
+            input.projectId ?? ''
+          } elapsed_ms=${Date.now() - dbStartedAt}`,
+        );
         task.taskId = createdTask.id;
         this.trackedTasksById.set(createdTask.id, task);
       }
 
-      logger.info(`Created asking task with queryId: ${queryId}`);
+      logger.info(
+        `Created asking task with queryId: ${queryId}`,
+      );
+      logger.info(
+        `Ask timing stage=task_creation_tracker project_id=${
+          input.projectId ?? ''
+        } query_id=${queryId} elapsed_ms=${Date.now() - startedAt}`,
+      );
       return { queryId };
-    } catch (err) {
-      logger.error(`Failed to create asking task: ${err}`);
+    } catch (err: any) {
+      logger.error(
+        `Failed to create asking task for projectId=${
+          input.projectId ?? 'unknown'
+        }, deployId=${input.deployId ?? 'unknown'}: ${
+          err?.stack || err?.message || err
+        }`,
+      );
       throw err;
     }
   }
@@ -328,8 +366,14 @@ export class AskingTaskTracker implements IAskingTaskTracker {
 
             // Poll for updates
             logger.debug(`Polling for updates for task ${queryId}`);
+            const pollStartedAt = Date.now();
             const resultFromAIService =
               await this.wrenAIAdaptor.getAskResult(queryId);
+            logger.info(
+              `Ask timing stage=task_poll query_id=${queryId} elapsed_ms=${
+                Date.now() - pollStartedAt
+              }`,
+            );
             const result = this.isMissingInAIService(resultFromAIService)
               ? this.createExpiredTaskResult()
               : resultFromAIService;

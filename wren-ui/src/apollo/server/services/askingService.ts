@@ -3,6 +3,7 @@ import {
   AskResultStatus,
   AskResultType,
   AskCandidateType,
+  type RecommendationQuestion,
   RecommendationQuestionsResult,
   RecommendationQuestionsInput,
   WrenAIError,
@@ -673,20 +674,20 @@ export class AskingService implements IAskingService {
     previousTaskId?: number,
     threadResponseId?: number,
   ): Promise<Task> {
+    const startedAt = Date.now();
     const { threadId, language } = payload;
     const currentProject = await this.projectService.getCurrentProject();
     let projectId = payload.projectId ?? currentProject.id;
+    let previousTaskState = null;
     if (threadId) {
-      const thread = await this.threadRepository.findOneBy({ id: threadId });
-      if (!thread) {
-        throw new Error(`Thread ${threadId} not found`);
-      }
+      const thread = await this.ensureThreadInCurrentProject(threadId);
       if (payload.projectId && payload.projectId !== thread.projectId) {
         throw new Error(
           `Thread ${threadId} does not belong to project ${payload.projectId}`,
         );
       }
       projectId = thread.projectId;
+      previousTaskState = await this.getLatestThreadTaskState(threadId);
     } else if (projectId !== currentProject.id) {
       throw new Error(`Project ${projectId} is not the active project`);
     }
@@ -698,6 +699,14 @@ export class AskingService implements IAskingService {
     const histories = threadId && isContextualFollowUpQuestion(input.question)
       ? await this.getAskingHistory(threadId, threadResponseId)
       : null;
+    logger.info(
+      `Ask timing stage=task_creation_context project_id=${projectId} thread_id=${
+        threadId ?? ''
+      } history_count=${histories?.length ?? 0} elapsed_ms=${
+        Date.now() - startedAt
+      }`,
+    );
+    const trackerStartedAt = Date.now();
     const response = await this.askingTaskTracker.createAskingTask({
       query: input.question,
       histories,
@@ -708,9 +717,51 @@ export class AskingService implements IAskingService {
       previousTaskId,
       threadResponseId,
     });
+    logger.info(
+      `Ask timing stage=task_creation project_id=${projectId} thread_id=${
+        threadId ?? ''
+      } elapsed_ms=${Date.now() - trackerStartedAt} total_ms=${
+        Date.now() - startedAt
+      }`,
+    );
     return {
       id: response.queryId,
     };
+    logger.info(
+      `Creating asking task: ${JSON.stringify({
+        ...logContext,
+        question: input.question,
+      })}`,
+    );
+
+    try {
+      const response = await this.askingTaskTracker.createAskingTask({
+        query: input.question,
+        histories,
+        deployId,
+        projectId: projectId.toString(),
+        configurations: { language },
+        rerunFromCancelled,
+        previousTaskId,
+        threadResponseId,
+      });
+      logger.info(
+        `Created asking task: ${JSON.stringify({
+          ...logContext,
+          queryId: response.queryId,
+        })}`,
+      );
+      return {
+        id: response.queryId,
+      };
+    } catch (err: any) {
+      logger.error(
+        `Failed to create asking task: ${JSON.stringify(logContext)} reason=${
+          err?.stack || err?.message || err
+        }`,
+      );
+      throw err;
+    }
   }
 
   public async rerunAskingTask(
@@ -1498,6 +1549,39 @@ export class AskingService implements IAskingService {
         language: WrenAILanguage[project.language] || WrenAILanguage.EN,
       },
     };
+  }
+
+  private async getLatestThreadTaskState(threadId: number) {
+    try {
+      const [latestResponse] =
+        await this.threadResponseRepository.getResponsesWithThread(threadId, 1);
+      if (!latestResponse) {
+        return null;
+      }
+
+      const task = latestResponse.askingTaskId
+        ? await this.askingTaskRepository.findOneBy({
+            id: latestResponse.askingTaskId,
+          })
+        : null;
+      const detail = task?.detail as any;
+
+      return {
+        threadResponseId: latestResponse.id,
+        askingTaskId: latestResponse.askingTaskId ?? null,
+        queryId: task?.queryId ?? null,
+        status: detail?.status ?? null,
+        type: detail?.type ?? null,
+        hasSql: !!latestResponse.sql,
+      };
+    } catch (err: any) {
+      logger.warn(
+        `Failed to inspect latest thread task state for thread ${threadId}: ${
+          err?.message || err
+        }`,
+      );
+      return null;
+    }
   }
 
   private async ensureThreadInCurrentProject(threadId: number): Promise<Thread> {
